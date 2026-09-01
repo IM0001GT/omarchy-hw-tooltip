@@ -2,7 +2,7 @@
 
 An Omarchy bar widget that names the silicon in the machine, then stays out of the way.
 
-Click the chip for a Power-style panel: CPU model and per-core bars, RAM type and speed, GPU name and load, disk model and fill. It follows the active Omarchy theme. Right-click opens `btop` if you want the full TUI.
+Click the chip for a Power-style panel: CPU model, temperature, and per-core bars, RAM type and speed, GPU name, temperature, and load, disk model and fill. It follows the active Omarchy theme. Right-click opens `btop` if you want the full TUI.
 
 <p align="center">
   <img src="preview.gif" alt="Left-click opens the Hardware Tooltip panel; click again to close" width="360">
@@ -15,7 +15,7 @@ Click the chip for a Power-style panel: CPU model and per-core bars, RAM type an
 
 | Left click | Right click |
 | --- | --- |
-| CPU name, per-core bars, RAM type/speed, GPU name, storage model and mounts | Launch or focus `btop` |
+| CPU name/temp, per-core bars, RAM type/speed, GPU name/temp, storage model and mounts | Launch or focus `btop` |
 
 Load-aware status lines rotate the same way the Power panel does — idle machines loaf, busy GPUs push pixels, a local model run starts chewing context.
 

@@ -11,6 +11,8 @@
 #   gpu_name <rest of line>
 #   gpu_kind render | infer
 #   gpu_hint nvidia-utils          (NVIDIA hardware, nvidia-smi missing)
+#   cpu_temp <celsius> | n/a
+#   gpu_temp <celsius> | n/a
 #   disk <mount> <used-gib> <total-gib> <percent> [model...]
 #
 # GPU source is the first tool that actually returns a sample:
@@ -387,6 +389,80 @@ notice_missing_nvidia_utils() {
 }
 
 notice_missing_nvidia_utils
+
+# ---- Temperatures ------------------------------------------------------
+
+if command -v python3 >/dev/null 2>&1; then
+  python3 - <<'PY'
+import glob, os, subprocess
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+def hwmon_dirs():
+    return glob.glob("/sys/class/hwmon/hwmon*")
+
+def cpu_temp():
+    for hw in hwmon_dirs():
+        name = read(os.path.join(hw, "name")).lower()
+        if name not in ("k10temp", "zenpower", "coretemp", "cpu_thermal"):
+            continue
+        for label_path in sorted(glob.glob(os.path.join(hw, "temp*_label"))):
+            label = read(label_path).lower()
+            if name in ("k10temp", "zenpower") and label not in ("tctl", "tdie"):
+                continue
+            if name == "coretemp" and "package" not in label:
+                continue
+            raw = read(label_path.replace("_label", "_input"))
+            if raw.lstrip("-").isdigit():
+                return int(raw) / 1000
+        raw = read(os.path.join(hw, "temp1_input"))
+        if raw.lstrip("-").isdigit():
+            return int(raw) / 1000
+    for zone in glob.glob("/sys/class/thermal/thermal_zone*"):
+        ztype = read(os.path.join(zone, "type")).lower()
+        if ztype in ("x86_pkg_temp", "acpitz", "cpu-thermal"):
+            raw = read(os.path.join(zone, "temp"))
+            if raw.lstrip("-").isdigit():
+                return int(raw) / 1000
+    return None
+
+def gpu_temp_nvidia():
+    if not os.path.exists("/proc/driver/nvidia/version"):
+        return None
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=2,
+        )
+        line = (out.stdout or "").strip().splitlines()
+        if out.returncode == 0 and line and line[0].strip().isdigit():
+            return int(line[0].strip())
+    except Exception:
+        pass
+    return None
+
+def gpu_temp_amdgpu():
+    for hw in hwmon_dirs():
+        if read(os.path.join(hw, "name")).lower() != "amdgpu":
+            continue
+        raw = read(os.path.join(hw, "temp1_input"))
+        if raw.lstrip("-").isdigit():
+            return int(raw) / 1000
+    return None
+
+ct = cpu_temp()
+print("cpu_temp %s" % (round(ct) if ct is not None else "n/a"))
+gt = gpu_temp_nvidia()
+if gt is None:
+    gt = gpu_temp_amdgpu()
+print("gpu_temp %s" % (round(gt) if gt is not None else "n/a"))
+PY
+fi
 
 # ---- Hardware labels (cached; names do not change every tick) --------
 

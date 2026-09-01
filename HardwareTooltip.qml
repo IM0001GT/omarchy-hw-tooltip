@@ -16,6 +16,8 @@ BarWidget {
 
   property string cpuText: "--"
   property string cpuName: "CPU"
+  property string cpuTempText: "--"
+  property string gpuTempText: ""
   property var cores: []
   property string ramUsed: "--"
   property string ramTotal: "--"
@@ -199,6 +201,8 @@ BarWidget {
     var disks = []
     var cpu = "--"
     var cpuName = root.cpuName
+    var cpuTemp = root.cpuTempText
+    var gpuTemp = root.gpuTempText
     var ramUsed = "--"
     var ramTotal = "--"
     var ramPct = 0
@@ -239,6 +243,10 @@ BarWidget {
         gpuKind = parts[1]
       } else if (key === "gpu_hint" && parts.length > 1) {
         gpuHint = parts[1]
+      } else if (key === "cpu_temp" && parts.length > 1) {
+        cpuTemp = parts[1] === "n/a" ? "--" : parts[1] + "°C"
+      } else if (key === "gpu_temp" && parts.length > 1) {
+        gpuTemp = parts[1] === "n/a" ? "" : parts[1] + "°C"
       } else if (key === "ram_active" && parts.length > 1) {
         ramActive = parts[1] === "1"
       } else if (key === "disk_io" && parts.length > 1) {
@@ -261,6 +269,8 @@ BarWidget {
     root.gpuName = gpuName
     root.gpuKind = gpuKind
     root.gpuHint = gpuHint
+    root.cpuTempText = cpuTemp
+    root.gpuTempText = gpuTemp
     root.ramActive = ramActive
     root.diskActive = diskActive
     root.disks = disks
@@ -397,7 +407,7 @@ BarWidget {
       Item {
         id: heroBlock
         width: parent.width
-        implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroPercent.implicitHeight)
+        implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroPercentBlock.implicitHeight)
 
         Text {
           id: heroIcon
@@ -413,7 +423,7 @@ BarWidget {
           id: heroLabels
           anchors.left: heroIcon.right
           anchors.leftMargin: Style.space(14)
-          anchors.right: heroPercent.left
+          anchors.right: heroPercentBlock.left
           anchors.rightMargin: Style.space(10)
           anchors.verticalCenter: parent.verticalCenter
           spacing: Style.space(2)
@@ -454,15 +464,31 @@ BarWidget {
           }
         }
 
-        Text {
-          id: heroPercent
-          text: root.cpuText
-          color: root.fg
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.title
-          font.bold: true
+        Column {
+          id: heroPercentBlock
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(2)
+
+          Text {
+            id: heroPercent
+            text: root.cpuText
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.title
+            font.bold: true
+            anchors.right: parent.right
+          }
+
+          Text {
+            visible: root.cpuTempText !== "--"
+            text: root.cpuTempText
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            anchors.right: parent.right
+          }
         }
       }
 
@@ -559,7 +585,7 @@ BarWidget {
           value: root.gpuText
           status: root.gpuText === "n/a"
             ? (root.gpuHint === "nvidia-utils" ? "Install nvidia-utils for GPU stats" : "GPU stats unavailable")
-            : root.gpuName
+            : (root.gpuTempText !== "" ? root.gpuName + " · " + root.gpuTempText : root.gpuName)
           percent: root.gpuText === "n/a" ? -1 : root.gpuPct
         }
 
