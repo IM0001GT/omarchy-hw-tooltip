@@ -16,9 +16,11 @@
 # GPU source is the first tool that actually returns a sample:
 #   NVIDIA -> nvidia-smi (nvidia-utils; skipped if the driver is not talking)
 #   AMD    -> kernel sysfs gpu_busy_percent (amdgpu, no extra package)
-#   DRM    -> /proc/*/fdinfo drm-engine-* (Intel i915/xe, and AMD when
+#   DRM    -> /proc/*/fdinfo drm-engine-* (Intel i915, and AMD when
 #             sysfs busy is ENOTSUPP such as the BC-250 / Cyan Skillfish)
-#   Intel  -> RC6 residency if fdinfo is empty
+#             or drm-cycles-* / drm-total-cycles-* (Intel xe)
+#   Intel  -> RC6 residency (i915) or render GT idle residency (xe)
+#             if fdinfo is empty
 #   last   -> intel_gpu_top only if it already works on this system
 #
 # BC-250 is a one-off Oberon / Cyan Skillfish board with a nonstandard
@@ -170,7 +172,7 @@ def state_path():
     return os.path.join(cache, "gpu.state")
 
 STATE = state_path()
-PREFERRED = {"render", "gfx", "compute"}
+PREFERRED = {"render", "gfx", "compute", "rcs", "ccs"}
 
 def snap_fdinfo():
     clients = {}
@@ -199,22 +201,32 @@ def snap_fdinfo():
                     text = fh.read()
             except OSError:
                 continue
-            if "drm-engine-" not in text:
+            if "drm-engine-" not in text and "drm-cycles-" not in text:
                 continue
             client = None
             for line in text.splitlines():
-                if line.startswith("drm-client-id:"):
-                    client = line.split(":", 1)[1].strip()
-                elif line.startswith("drm-engine-") and not line.startswith("drm-engine-capacity-"):
-                    name = line.split(":", 1)[0][len("drm-engine-"):]
-                    digits = "".join(c for c in line.split(":", 1)[1] if c.isdigit())
-                    if not digits:
-                        continue
-                    ns = int(digits)
-                    key = "%s:%s" % (pid, client or fd)
-                    engines = clients.setdefault(key, {})
-                    if ns > engines.get(name, 0):
-                        engines[name] = ns
+                label, _, value = line.partition(":")
+                if label == "drm-client-id":
+                    client = value.strip()
+                    continue
+                # i915 reports nanoseconds per engine. xe reports busy cycles
+                # against a shared GPU timestamp, so keep both counters.
+                if label.startswith("drm-engine-") and not label.startswith("drm-engine-capacity-"):
+                    name = label[len("drm-engine-"):]
+                elif label.startswith("drm-total-cycles-"):
+                    name = label[len("drm-total-cycles-"):] + "@total"
+                elif label.startswith("drm-cycles-"):
+                    name = label[len("drm-cycles-"):] + "@cycles"
+                else:
+                    continue
+                digits = "".join(c for c in value if c.isdigit())
+                if not digits:
+                    continue
+                ns = int(digits)
+                key = "%s:%s" % (pid, client or fd)
+                engines = clients.setdefault(key, {})
+                if ns > engines.get(name, 0):
+                    engines[name] = ns
     return clients
 
 def snap_rc6():
@@ -223,6 +235,14 @@ def snap_rc6():
         enable = path.replace("rc6_residency_ms", "rc6_enable")
         try:
             if os.path.exists(enable) and int(open(enable).read().strip()) == 0:
+                continue
+            vals[path] = int(open(path).read().strip())
+        except (OSError, ValueError):
+            continue
+    # xe exposes the render GT idle residency under tile0/gt*/gtidle.
+    for path in glob.glob("/sys/class/drm/card*/device/tile0/gt*/gtidle/idle_residency_ms"):
+        try:
+            if not open(path.replace("idle_residency_ms", "name")).read().strip().endswith("-rc"):
                 continue
             vals[path] = int(open(path).read().strip())
         except (OSError, ValueError):
@@ -278,13 +298,25 @@ def save_state(t_ns, clients, rc6):
 def fdinfo_pct(before, after, dt_ns):
     if dt_ns <= 0 or not after:
         return None
-    totals = {}
+    totals, cycles, spans = {}, {}, {}
     for key, engines in after.items():
         prev = before.get(key, {})
         for name, ns in engines.items():
             delta = ns - prev.get(name, ns)
-            if delta > 0:
+            if name.endswith("@total"):
+                base = name[:-len("@total")]
+                spans[base] = max(spans.get(base, 0), delta)
+            elif name.endswith("@cycles"):
+                base = name[:-len("@cycles")]
+                if delta > 0:
+                    cycles[base] = cycles.get(base, 0) + delta
+            elif delta > 0:
                 totals[name] = totals.get(name, 0) + delta
+    # Scale xe busy cycles to the sample window so both drivers share the
+    # nanosecond math below.
+    for name, busy in cycles.items():
+        if spans.get(name, 0) > 0:
+            totals[name] = totals.get(name, 0) + busy * dt_ns / spans[name]
     if not any(engines for engines in after.values()):
         return None
     if not totals:

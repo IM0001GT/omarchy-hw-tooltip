@@ -93,7 +93,7 @@ omarchy plugin remove im0001gt.hw-tooltip
 
 | GPU | Extra package | How load is read |
 | --- | --- | --- |
-| Intel | none | DRM fdinfo engine busy, then RC6 residency. No `kernel.perf_event_paranoid` change |
+| Intel | none | DRM fdinfo engine busy (`drm-engine-*` on i915, `drm-cycles-*` on xe), then RC6 / GT idle residency. No `kernel.perf_event_paranoid` change |
 | NVIDIA | `nvidia-utils` | `nvidia-smi`, and only when the NVIDIA driver is loaded |
 | AMD | none | `gpu_busy_percent`. If that node is missing or `ENOTSUPP` (BC-250), DRM fdinfo engine time |
 
