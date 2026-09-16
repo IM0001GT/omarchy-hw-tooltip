@@ -2,7 +2,7 @@
 
 An Omarchy bar widget that names the silicon in the machine, then stays out of the way.
 
-Click the chip for a Power-style panel: CPU model and per-core bars, RAM type and speed, GPU name and load, disk model and fill. It follows the active Omarchy theme. Right-click opens `btop` if you want the full TUI.
+Click the chip for a Power-style panel: CPU model, temperature, and per-core bars, RAM type/speed and temp, GPU name, temperature, and load, disk model, fill, and temp. It follows the active Omarchy theme. Right-click opens `btop` if you want the full TUI.
 
 <p align="center">
   <img src="preview.gif" alt="Left-click opens the Hardware Tooltip panel; click again to close" width="360">
@@ -15,7 +15,7 @@ Click the chip for a Power-style panel: CPU model and per-core bars, RAM type an
 
 | Left click | Right click |
 | --- | --- |
-| CPU name, per-core bars, RAM type/speed, GPU name, storage model and mounts | Launch or focus `btop` |
+| CPU name/temp, per-core bars, RAM type/speed/temp, GPU name/temp, storage model, fill, and temp | Launch or focus `btop` |
 
 Load-aware status lines rotate the same way the Power panel does — idle machines loaf, busy GPUs push pixels, a local model run starts chewing context.
 
@@ -93,11 +93,15 @@ omarchy plugin remove im0001gt.hw-tooltip
 
 | GPU | Extra package | How load is read |
 | --- | --- | --- |
-| Intel | none | DRM fdinfo engine busy, then RC6 residency. No `kernel.perf_event_paranoid` change |
+| Intel | none | DRM fdinfo engine busy (`drm-engine-*` on i915, `drm-cycles-*` on xe), then RC6 / GT idle residency. No `kernel.perf_event_paranoid` change |
 | NVIDIA | `nvidia-utils` | `nvidia-smi`, and only when the NVIDIA driver is loaded |
 | AMD | none | `gpu_busy_percent`. If that node is missing or `ENOTSUPP` (BC-250), DRM fdinfo engine time |
 
-Hybrid laptops use the first source that actually returns a reading.
+Hybrid laptops and multi-GPU desktops list each card the same way storage lists each mount: name, load, and one headline temperature.
+
+## Temperatures
+
+Each device in the panel shows one headline temperature when the kernel exposes it: CPU package / Tctl, GPU junction (AMD) or GPU die, a DIMM/SODIMM reading, and NVMe Composite (or the drive's primary sensor). Extra per-core, per-junction, and ambient/wifi/battery sensors stay out of the tooltip.
 
 ## Layout
 
@@ -108,9 +112,17 @@ preview.gif            README demo
 preview.png            Marketplace still (teal theme)
 docs/theme-night.png   Same panel after a theme change
 scripts/system-usage   CPU / RAM / GPU / disk sampler
+scripts/hw_tooltip.py  Intel xe load + headline temperatures
+tests/test_hw_tooltip.py
 ```
 
 The repo root **is** the plugin. That is what `omarchy plugin add` and `omarchy plugin validate` expect.
+
+## Credits
+
+- [pisolutions-es](https://github.com/pisolutions-es) — Intel xe GPU load from fdinfo cycles and GT idle residency
+- [hlasensky](https://github.com/hlasensky) — CPU and GPU temperature display
+- [jotapesse](https://github.com/jotapesse) — memory and storage temperatures
 
 ## License
 

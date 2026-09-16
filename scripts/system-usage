@@ -11,20 +11,30 @@
 #   gpu_name <rest of line>
 #   gpu_kind render | infer
 #   gpu_hint nvidia-utils          (NVIDIA hardware, nvidia-smi missing)
+#   cpu_temp <celsius> | n/a
+#   gpu_temp <celsius> | n/a
+#   ram_temp <celsius> | n/a
+#   disk_temp <mount> <celsius>
 #   disk <mount> <used-gib> <total-gib> <percent> [model...]
 #
 # GPU source is the first tool that actually returns a sample:
 #   NVIDIA -> nvidia-smi (nvidia-utils; skipped if the driver is not talking)
 #   AMD    -> kernel sysfs gpu_busy_percent (amdgpu, no extra package)
-#   DRM    -> /proc/*/fdinfo drm-engine-* (Intel i915/xe, and AMD when
+#   DRM    -> /proc/*/fdinfo drm-engine-* (Intel i915, and AMD when
 #             sysfs busy is ENOTSUPP such as the BC-250 / Cyan Skillfish)
-#   Intel  -> RC6 residency if fdinfo is empty
+#             or drm-cycles-* / drm-total-cycles-* (Intel xe)
+#   Intel  -> RC6 residency (i915) or render GT idle residency (xe)
+#             if fdinfo is empty
 #   last   -> intel_gpu_top only if it already works on this system
 #
 # BC-250 is a one-off Oberon / Cyan Skillfish board with a nonstandard
 # RDNA 2-ish GPU. The busy sysfs node is ENOTSUPP and gpu_metrics activity
 # stays at 0xFFFF, so fdinfo is the usable load signal on that hardware.
 # Unified memory is soldered GDDR6 with no SPD; DMI type is N/A.
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+export PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}"
+SIDECAR_TEMPS=0
 
 # ---- CPU -------------------------------------------------------------
 
@@ -93,26 +103,9 @@ awk '
 
 # ---- GPU -------------------------------------------------------------
 
-# Only talk to nvidia-smi when the kernel driver is actually bound.
-# A leftover nvidia-smi binary with no driver can block for several seconds.
-gpu_from_nvidia() {
-  [[ -r /proc/driver/nvidia/version ]] || return 1
-  command -v nvidia-smi >/dev/null 2>&1 || return 1
-  local vals max="" v cmd=(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits)
-  if command -v timeout >/dev/null 2>&1; then
-    cmd=(timeout 2 "${cmd[@]}")
-  fi
-  vals=$("${cmd[@]}" 2>/dev/null || true)
-  while IFS= read -r v; do
-    v=${v//[^0-9]/}
-    if [[ -n $v && ( -z $max || v -gt max ) ]]; then
-      max=$v
-    fi
-  done <<< "$vals"
-  [[ -n $max ]] || return 1
-  echo "gpu $max"
-}
-
+# One python pass lists every PCI GPU (NVIDIA / AMD / Intel), samples load
+# and the headline temp, then emits CPU/RAM/disk temps. intel_gpu_top is
+# only a last resort when that pass cannot name a load.
 gpu_from_intel_gpu_top() {
   command -v intel_gpu_top >/dev/null 2>&1 || return 1
   command -v python3 >/dev/null 2>&1 || return 1
@@ -134,216 +127,14 @@ if busy:
   printf '%s\n' "$out"
 }
 
-gpu_from_amd() {
-  local f v
-  for f in /sys/class/drm/card*/device/gpu_busy_percent; do
-    [[ -f $f ]] || continue
-    v=$(tr -dc '0-9' < "$f" 2>/dev/null)
-    if [[ -n $v ]]; then
-      echo "gpu $v"
-      return 0
-    fi
-  done
-  return 1
-}
-
-# Unprivileged DRM sample for Intel (i915/xe) and for AMD chips whose
-# gpu_busy_percent node exists but cannot be read (BC-250 / Cyan Skillfish).
-# Headline % prefers Render/3D (render/gfx/compute). Video/copy engines
-# are ignored unless those 3D engines are missing. The previous snapshot
-# is reused so the window is the widget interval (~2s), not a 200ms burst.
-gpu_from_drm() {
-  command -v python3 >/dev/null 2>&1 || return 1
-  local out
-  out=$(python3 - <<'PY'
-import glob, os, time
-
-def state_path():
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime:
-        return os.path.join(runtime, "hw-tooltip-gpu.state")
-    cache = os.path.join(os.path.expanduser("~"), ".cache", "hw-tooltip")
-    try:
-        os.makedirs(cache, mode=0o700, exist_ok=True)
-    except OSError:
-        return None
-    return os.path.join(cache, "gpu.state")
-
-STATE = state_path()
-PREFERRED = {"render", "gfx", "compute"}
-
-def snap_fdinfo():
-    clients = {}
-    try:
-        pids = os.listdir("/proc")
-    except OSError:
-        return clients
-    for pid in pids:
-        if not pid.isdigit():
-            continue
-        fd_dir = "/proc/%s/fd" % pid
-        info_dir = "/proc/%s/fdinfo" % pid
-        try:
-            fds = os.listdir(fd_dir)
-        except OSError:
-            continue
-        for fd in fds:
-            try:
-                tgt = os.readlink(os.path.join(fd_dir, fd))
-            except OSError:
-                continue
-            if "/dri/" not in tgt and not tgt.startswith("/dev/dri"):
-                continue
-            try:
-                with open(os.path.join(info_dir, fd), "r", errors="ignore") as fh:
-                    text = fh.read()
-            except OSError:
-                continue
-            if "drm-engine-" not in text:
-                continue
-            client = None
-            for line in text.splitlines():
-                if line.startswith("drm-client-id:"):
-                    client = line.split(":", 1)[1].strip()
-                elif line.startswith("drm-engine-") and not line.startswith("drm-engine-capacity-"):
-                    name = line.split(":", 1)[0][len("drm-engine-"):]
-                    digits = "".join(c for c in line.split(":", 1)[1] if c.isdigit())
-                    if not digits:
-                        continue
-                    ns = int(digits)
-                    key = "%s:%s" % (pid, client or fd)
-                    engines = clients.setdefault(key, {})
-                    if ns > engines.get(name, 0):
-                        engines[name] = ns
-    return clients
-
-def snap_rc6():
-    vals = {}
-    for path in glob.glob("/sys/class/drm/card*/gt/gt*/rc6_residency_ms"):
-        enable = path.replace("rc6_residency_ms", "rc6_enable")
-        try:
-            if os.path.exists(enable) and int(open(enable).read().strip()) == 0:
-                continue
-            vals[path] = int(open(path).read().strip())
-        except (OSError, ValueError):
-            continue
-    return vals
-
-def load_state():
-    if not STATE:
-        return None
-    try:
-        with open(STATE, "r", encoding="utf-8") as fh:
-            lines = fh.read().splitlines()
-    except OSError:
-        return None
-    if len(lines) < 2:
-        return None
-    try:
-        t_ns = int(lines[0])
-        rc6 = {}
-        clients = {}
-        for line in lines[1:]:
-            parts = line.split()
-            if len(parts) == 2:
-                rc6[parts[0]] = int(parts[1])
-            elif len(parts) == 3:
-                clients.setdefault(parts[0], {})[parts[1]] = int(parts[2])
-            else:
-                return None
-    except ValueError:
-        return None
-    return t_ns, clients, rc6
-
-def save_state(t_ns, clients, rc6):
-    if not STATE:
-        return
-    tmp = STATE + ".tmp"
-    try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write("%d\n" % t_ns)
-            for path, val in rc6.items():
-                fh.write("%s %d\n" % (path, val))
-            for key, engines in clients.items():
-                for name, ns in engines.items():
-                    fh.write("%s %s %d\n" % (key, name, ns))
-        os.replace(tmp, STATE)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-
-def fdinfo_pct(before, after, dt_ns):
-    if dt_ns <= 0 or not after:
-        return None
-    totals = {}
-    for key, engines in after.items():
-        prev = before.get(key, {})
-        for name, ns in engines.items():
-            delta = ns - prev.get(name, ns)
-            if delta > 0:
-                totals[name] = totals.get(name, 0) + delta
-    if not any(engines for engines in after.values()):
-        return None
-    if not totals:
-        return 0
-    preferred = [totals[n] for n in totals if n in PREFERRED]
-    chosen = max(preferred) if preferred else max(totals.values())
-    return max(0, min(100, round(chosen * 100 / dt_ns)))
-
-def rc6_pct(before, after, dt_ms):
-    if dt_ms <= 0 or not after:
-        return None
-    best = None
-    for path, end in after.items():
-        start = before.get(path)
-        if start is None:
-            continue
-        idle = (end - start) * 100 / dt_ms
-        busy = max(0, min(100, round(100 - idle)))
-        best = busy if best is None else max(best, busy)
-    return best
-
-now_ns = time.monotonic_ns()
-fd1, rc1 = snap_fdinfo(), snap_rc6()
-prev = load_state()
-save_state(now_ns, fd1, rc1)
-
-pct = None
-if prev is not None:
-    t0, fd0, rc0 = prev
-    dt_ns = now_ns - t0
-    if 400_000_000 <= dt_ns <= 10_000_000_000:
-        pct = fdinfo_pct(fd0, fd1, dt_ns)
-        if pct is None:
-            pct = rc6_pct(rc0, rc1, dt_ns / 1e6)
-
-if pct is None:
-    time.sleep(0.2)
-    t1 = time.monotonic_ns()
-    fd2, rc2 = snap_fdinfo(), snap_rc6()
-    save_state(t1, fd2, rc2)
-    pct = fdinfo_pct(fd1, fd2, t1 - now_ns)
-    if pct is None:
-        pct = rc6_pct(rc1, rc2, (t1 - now_ns) / 1e6)
-
-if pct is None:
-    raise SystemExit(0)
-print("gpu %d" % pct)
-PY
-)
-  [[ $out == gpu* ]] || return 1
-  printf '%s\n' "$out"
-}
-
-# Prefer a tool that actually returns a sample. A leftover nvidia-smi (or
-# intel_gpu_top without PMU access) must not hide a working fallback.
 gpu_report() {
-  gpu_from_nvidia && return
-  gpu_from_amd && return
-  gpu_from_drm && return
+  if command -v python3 >/dev/null 2>&1; then
+    local out
+    out=$(python3 "$HERE/hw_tooltip.py" tick 2>/dev/null || true)
+    SIDECAR_TEMPS=1
+    printf '%s\n' "$out"
+    [[ $out == *$'\ngpu '* || $out == gpu* ]] && return
+  fi
   gpu_from_intel_gpu_top && return
   echo "gpu n/a"
 }
@@ -369,12 +160,22 @@ notice_missing_nvidia_utils() {
   nvidia_present || return 0
   echo "gpu_hint nvidia-utils"
 
-  local dir flag
-  dir="${XDG_CACHE_HOME:-$HOME/.cache}/hw-tooltip"
-  flag="$dir/nvidia-utils-notice"
-  [[ -f $flag ]] && return 0
-  mkdir -p "$dir" 2>/dev/null || return 0
-  : > "$flag" || return 0
+  local flag
+  flag="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hw-tooltip}/hw-tooltip-nvidia-utils-notice"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<PY
+from hw_tooltip import read_private_file, write_private_file, runtime_file
+path = runtime_file("nvidia-utils-notice")
+raise SystemExit(0 if read_private_file(path) is not None else 1)
+PY
+    [[ $? -eq 0 ]] && return 0
+    python3 - <<PY
+from hw_tooltip import write_private_file, runtime_file
+write_private_file(runtime_file("nvidia-utils-notice"), "1\n")
+PY
+  else
+    [[ -f $flag ]] && return 0
+  fi
 
   local headline="NVIDIA tools missing"
   local body="GPU stats need nvidia-utils. Omarchy usually ships this with the NVIDIA stack."
@@ -388,56 +189,50 @@ notice_missing_nvidia_utils() {
 
 notice_missing_nvidia_utils
 
+# ---- Temperatures (one headline reading per device) ------------------
+
+if [[ $SIDECAR_TEMPS -eq 0 ]] && command -v python3 >/dev/null 2>&1; then
+  python3 "$HERE/hw_tooltip.py" temps 2>/dev/null || true
+fi
+
 # ---- Hardware labels (cached; names do not change every tick) --------
 
 if command -v python3 >/dev/null 2>&1; then
   python3 - <<'PY'
 import glob, os, re, subprocess
 
+from hw_tooltip import read_private_file, runtime_file, write_private_file
+
 def cache_path():
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime:
-        return os.path.join(runtime, "hw-tooltip-hw")
-    cache = os.path.join(os.path.expanduser("~"), ".cache", "hw-tooltip")
     try:
-        os.makedirs(cache, mode=0o700, exist_ok=True)
+        return runtime_file("hw")
     except OSError:
         return None
-    return os.path.join(cache, "hw")
 
 def load_cache():
     path = cache_path()
     if not path:
         return None
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            text = fh.read()
-        if "cpu_name " not in text or "gpu_name GPU" in text:
-            return None
-        # Older builds turned empty-slot inxi text ("type: N/A",
-        # "type: no module installed") into ram_info N / no, or labeled
-        # BC-250 memory in Gbps instead of MT/s.
-        if re.search(r"(?m)^ram_info (N|no|none|not|GDDR6 14 Gbps)\b", text, re.I):
-            return None
-        return text
-    except OSError:
+    text = read_private_file(path)
+    if not text:
         return None
+    if "cpu_name " not in text or "gpu_name GPU" in text:
+        return None
+    # Older builds turned empty-slot inxi text ("type: N/A",
+    # "type: no module installed") into ram_info N / no, or labeled
+    # BC-250 memory in Gbps instead of MT/s.
+    if re.search(r"(?m)^ram_info (N|no|none|not|GDDR6 14 Gbps)\b", text, re.I):
+        return None
+    return text
 
 def save_cache(text):
     path = cache_path()
     if not path:
         return
-    tmp = path + ".tmp"
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, path)
+        write_private_file(path, text)
     except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        pass
 
 def clean_spaces(s):
     return " ".join((s or "").split())
@@ -683,16 +478,13 @@ if command -v python3 >/dev/null 2>&1; then
   python3 - <<'PY'
 import os, re, time
 
+from hw_tooltip import read_private_file, runtime_file, write_private_file
+
 def state_path():
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime:
-        return os.path.join(runtime, "hw-tooltip-activity")
-    cache = os.path.join(os.path.expanduser("~"), ".cache", "hw-tooltip")
     try:
-        os.makedirs(cache, mode=0o700, exist_ok=True)
+        return runtime_file("activity")
     except OSError:
         return None
-    return os.path.join(cache, "activity")
 
 def mem_used_kb():
     total = avail = 0
@@ -725,24 +517,16 @@ def disk_ops():
 
 def load_prev(path):
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            t, used, ops = fh.read().split()
+        t, used, ops = (read_private_file(path) or "").split()
         return int(t), int(used), int(ops)
-    except (OSError, ValueError):
+    except (OSError, TypeError, ValueError):
         return None
 
 def save(path, t, used, ops):
-    tmp = path + ".tmp"
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write("%d %d %d\n" % (t, used, ops))
-        os.replace(tmp, path)
+        write_private_file(path, "%d %d %d\n" % (t, used, ops))
     except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        pass
 
 now = time.monotonic_ns()
 used, total = mem_used_kb()

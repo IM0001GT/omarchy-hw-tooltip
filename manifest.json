@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "im0001gt.hw-tooltip",
   "name": "Hardware Tooltip",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "author": "IM0001GT",
   "license": "MIT",
   "homepage": "https://github.com/IM0001GT/omarchy-hw-tooltip",
-  "description": "Omarchy-native click panel that names your CPU, RAM, GPU, and disks, then shows live load bars that follow the theme",
+  "description": "Omarchy-native click panel that names your CPU, RAM, GPU, and disks, then shows live load bars and headline temperatures that follow the theme",
   "kinds": [
     "bar-widget"
   ],
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "Hardware Tooltip",
-    "description": "Click for CPU, RAM, GPU, and storage with real hardware names. Right-click opens btop.",
+    "description": "Click for CPU, RAM, GPU, and storage with real hardware names and temperatures. Right-click opens btop.",
     "category": "Hardware",
     "defaultSection": "right",
     "allowMultiple": false

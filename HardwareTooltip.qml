@@ -7,8 +7,9 @@ import qs.Commons
 BarWidget {
   id: root
 
-  readonly property string systemScript:
-    Quickshell.env("HOME") + "/.config/omarchy/plugins/" + root.moduleName + "/scripts/system-usage"
+  readonly property string pluginRoot: decodeURIComponent(String(Qt.resolvedUrl(".")))
+    .replace(/^file:\/\//, "").replace(/\/$/, "")
+  readonly property string systemScript: root.pluginRoot + "/scripts/system-usage"
 
   readonly property color fg: root.bar ? root.bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(root.fg, 1.4)
@@ -16,6 +17,9 @@ BarWidget {
 
   property string cpuText: "--"
   property string cpuName: "CPU"
+  property string cpuTempText: ""
+  property string gpuTempText: ""
+  property string ramTempText: ""
   property var cores: []
   property string ramUsed: "--"
   property string ramTotal: "--"
@@ -25,6 +29,7 @@ BarWidget {
   property string gpuName: "GPU"
   property string gpuKind: "render"
   property string gpuHint: ""
+  property var gpus: []
   property bool ramActive: false
   property bool diskActive: false
   property var disks: []
@@ -193,12 +198,52 @@ BarWidget {
     return String(line).slice(key.length).trim()
   }
 
+  function joinBits(bits) {
+    var out = []
+    for (var i = 0; i < bits.length; i++) {
+      if (bits[i]) out.push(bits[i])
+    }
+    return out.join(" · ")
+  }
+
+  function cpuIdentity() {
+    var name = (root.cpuName && root.cpuName !== "CPU") ? root.cpuName : ""
+    return root.joinBits([name, root.cpuTempText])
+  }
+
+  function ramStatus() {
+    var info = root.ramInfo !== "" ? root.ramInfo : ""
+    return root.joinBits([info, root.ramUsed + " / " + root.ramTotal + " GiB", root.ramTempText])
+  }
+
+  function gpuStatus() {
+    if (root.gpuText === "n/a" && root.gpuTempText === "")
+      return root.gpuHint === "nvidia-utils" ? "Install nvidia-utils for GPU stats" : "GPU stats unavailable"
+    var name = (root.gpuName && root.gpuName !== "GPU") ? root.gpuName : ""
+    return root.joinBits([name, root.gpuTempText])
+  }
+
+  function diskCaption(disk) {
+    var mount = disk.name ? disk.mount : ""
+    return root.joinBits([mount, disk.used + " / " + disk.total + " GiB", disk.temp || ""])
+  }
+
+  function gpuCaption(card) {
+    return card.temp || ""
+  }
+
   function parse(raw) {
     var lines = String(raw || "").split("\n")
     var cores = []
     var disks = []
+    var diskTemps = {}
+    var gpuDevs = {}
+    var gpuOrder = []
     var cpu = "--"
     var cpuName = root.cpuName
+    var cpuTemp = ""
+    var gpuTemp = ""
+    var ramTemp = ""
     var ramUsed = "--"
     var ramTotal = "--"
     var ramPct = 0
@@ -239,6 +284,25 @@ BarWidget {
         gpuKind = parts[1]
       } else if (key === "gpu_hint" && parts.length > 1) {
         gpuHint = parts[1]
+      } else if (key === "gpu_dev" && parts.length > 2) {
+        var id = parts[1]
+        if (!gpuDevs[id]) { gpuDevs[id] = { pci: id, name: "", text: "n/a", percent: -1, temp: "" }; gpuOrder.push(id) }
+        gpuDevs[id].text = parts[2] === "n/a" ? "n/a" : Math.max(0, Math.min(100, Math.round(parseFloat(parts[2]) || 0))) + "%"
+        gpuDevs[id].percent = parts[2] === "n/a" ? -1 : Math.max(0, Math.min(100, Math.round(parseFloat(parts[2]) || 0)))
+      } else if (key === "gpu_dev_name" && parts.length > 2) {
+        if (!gpuDevs[parts[1]]) { gpuDevs[parts[1]] = { pci: parts[1], name: "", text: "n/a", percent: -1, temp: "" }; gpuOrder.push(parts[1]) }
+        gpuDevs[parts[1]].name = parts.slice(2).join(" ")
+      } else if (key === "gpu_dev_temp" && parts.length > 2) {
+        if (!gpuDevs[parts[1]]) { gpuDevs[parts[1]] = { pci: parts[1], name: "", text: "n/a", percent: -1, temp: "" }; gpuOrder.push(parts[1]) }
+        gpuDevs[parts[1]].temp = parts[2] === "n/a" ? "" : parts[2] + "°C"
+      } else if (key === "cpu_temp" && parts.length > 1) {
+        cpuTemp = parts[1] === "n/a" ? "" : parts[1] + "°C"
+      } else if (key === "gpu_temp" && parts.length > 1) {
+        gpuTemp = parts[1] === "n/a" ? "" : parts[1] + "°C"
+      } else if (key === "ram_temp" && parts.length > 1) {
+        ramTemp = parts[1] === "n/a" ? "" : parts[1] + "°C"
+      } else if (key === "disk_temp" && parts.length > 2) {
+        diskTemps[parts[1]] = parts[2] === "n/a" ? "" : parts[2] + "°C"
       } else if (key === "ram_active" && parts.length > 1) {
         ramActive = parts[1] === "1"
       } else if (key === "disk_io" && parts.length > 1) {
@@ -246,21 +310,48 @@ BarWidget {
       } else if (key === "disk" && parts.length > 4) {
         var diskPct = Math.max(0, Math.min(100, Math.round(parseFloat(parts[4]) || 0)))
         var model = parts.length > 5 ? parts.slice(5).join(" ") : ""
-        disks.push({ mount: parts[1], used: parts[2], total: parts[3], percent: diskPct, name: model })
+        disks.push({ mount: parts[1], used: parts[2], total: parts[3], percent: diskPct, name: model, temp: "" })
+      }
+    }
+
+    for (var d = 0; d < disks.length; d++) {
+      disks[d] = {
+        mount: disks[d].mount,
+        used: disks[d].used,
+        total: disks[d].total,
+        percent: disks[d].percent,
+        name: disks[d].name,
+        temp: diskTemps[disks[d].mount] || ""
       }
     }
 
     root.cpuText = cpu
     root.cpuName = cpuName
+    root.cpuTempText = cpuTemp
+    root.gpuTempText = gpuTemp
+    root.ramTempText = ramTemp
     root.cores = cores
     root.ramUsed = ramUsed
     root.ramTotal = ramTotal
     root.ramPct = ramPct
     root.ramInfo = ramInfo
+    var gpus = []
+    for (var g = 0; g < gpuOrder.length; g++) gpus.push(gpuDevs[gpuOrder[g]])
+    if (gpus.length === 0 && (gpu !== "n/a" || gpuTemp !== "" || (gpuName && gpuName !== "GPU"))) {
+      gpus.push({
+        pci: "gpu",
+        name: gpuName,
+        text: gpu,
+        percent: gpu === "n/a" ? -1 : (parseInt(gpu, 10) || 0),
+        temp: gpuTemp
+      })
+    }
+
     root.gpuText = gpu
     root.gpuName = gpuName
     root.gpuKind = gpuKind
     root.gpuHint = gpuHint
+    root.gpus = gpus
     root.ramActive = ramActive
     root.diskActive = diskActive
     root.disks = disks
@@ -419,6 +510,7 @@ BarWidget {
           spacing: Style.space(2)
 
           Text {
+            textFormat: Text.PlainText
             text: "CPU"
             color: root.fg
             font.family: root.fontFamily
@@ -430,8 +522,9 @@ BarWidget {
           }
 
           Text {
-            visible: root.cpuName !== "" && root.cpuName !== "CPU"
-            text: root.cpuName
+            textFormat: Text.PlainText
+            visible: root.cpuIdentity() !== ""
+            text: root.cpuIdentity()
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -442,6 +535,7 @@ BarWidget {
 
           Text {
             id: heroStatus
+            textFormat: Text.PlainText
             text: root.heroStatusText.toUpperCase()
             color: root.dim
             font.family: root.fontFamily
@@ -456,6 +550,7 @@ BarWidget {
 
         Text {
           id: heroPercent
+          textFormat: Text.PlainText
           text: root.cpuText
           color: root.fg
           font.family: root.fontFamily
@@ -499,6 +594,7 @@ BarWidget {
               spacing: Style.space(6)
 
               Text {
+                textFormat: Text.PlainText
                 text: "C" + modelData.core
                 color: root.dim
                 font.family: root.fontFamily
@@ -516,6 +612,7 @@ BarWidget {
               }
 
               Text {
+                textFormat: Text.PlainText
                 text: modelData.percent + "%"
                 color: root.fg
                 font.family: root.fontFamily
@@ -543,9 +640,7 @@ BarWidget {
           icon: "󰓅"
           title: "Memory"
           value: root.ramPct + "%"
-          status: root.ramInfo !== ""
-            ? root.ramInfo + " · " + root.ramUsed + " / " + root.ramTotal + " GiB"
-            : root.ramUsed + " / " + root.ramTotal + " GiB"
+          status: root.ramStatus()
           percent: root.ramPct
         }
 
@@ -556,11 +651,28 @@ BarWidget {
         SectionBlock {
           icon: "󰢮"
           title: "GPU"
-          value: root.gpuText
-          status: root.gpuText === "n/a"
-            ? (root.gpuHint === "nvidia-utils" ? "Install nvidia-utils for GPU stats" : "GPU stats unavailable")
-            : root.gpuName
-          percent: root.gpuText === "n/a" ? -1 : root.gpuPct
+          value: root.gpus.length <= 1 ? root.gpuText : ""
+          status: root.gpus.length <= 1 ? root.gpuStatus() : ""
+          percent: root.gpus.length <= 1 ? (root.gpuText === "n/a" ? -1 : root.gpuPct) : -1
+        }
+
+        Column {
+          visible: root.gpus.length > 1
+          width: parent.width
+          spacing: Style.space(14)
+
+          Repeater {
+            model: root.gpus.length > 1 ? root.gpus : []
+
+            StatRow {
+              required property var modelData
+
+              label: modelData.name ? modelData.name : "GPU"
+              value: modelData.text
+              percent: modelData.percent
+              caption: root.gpuCaption(modelData)
+            }
+          }
         }
 
         PanelSeparator {
@@ -570,17 +682,18 @@ BarWidget {
         SectionBlock {
           icon: "󰋊"
           title: "Storage"
-          value: ""
-          status: ""
-          percent: -1
+          value: root.disks.length === 1 ? root.disks[0].percent + "%" : ""
+          status: root.disks.length === 1 ? root.diskCaption(root.disks[0]) : ""
+          percent: root.disks.length === 1 ? root.disks[0].percent : -1
         }
 
         Column {
+          visible: root.disks.length > 1
           width: parent.width
-          spacing: Style.spacing.sm
+          spacing: Style.space(14)
 
           Repeater {
-            model: root.disks
+            model: root.disks.length > 1 ? root.disks : []
 
             StatRow {
               required property var modelData
@@ -588,9 +701,7 @@ BarWidget {
               label: modelData.name ? modelData.name : modelData.mount
               value: modelData.percent + "%"
               percent: modelData.percent
-              caption: modelData.name
-                ? modelData.mount + " · " + modelData.used + " / " + modelData.total + " GiB"
-                : modelData.used + " / " + modelData.total + " GiB"
+              caption: root.diskCaption(modelData)
             }
           }
         }
@@ -627,6 +738,7 @@ BarWidget {
 
       Text {
         id: secTitle
+        textFormat: Text.PlainText
         text: section.title
         color: root.fg
         font.family: root.fontFamily
@@ -643,6 +755,7 @@ BarWidget {
 
       Text {
         id: secValue
+        textFormat: Text.PlainText
         visible: section.value !== ""
         text: section.value
         color: root.fg
@@ -662,6 +775,7 @@ BarWidget {
     }
 
     Text {
+      textFormat: Text.PlainText
       visible: section.status !== ""
       width: parent.width
       text: section.status
@@ -705,8 +819,8 @@ BarWidget {
     width: parent.width
 
     readonly property real headerHeight: Math.max(statLabel.implicitHeight, statValue.implicitHeight)
-    readonly property real barHeight: Style.space(5)
-    readonly property real gap: Style.space(3)
+    readonly property real barHeight: Style.space(6)
+    readonly property real gap: Style.space(6)
     readonly property real barBlock: percent >= 0 ? gap + barHeight : 0
 
     implicitHeight: headerHeight
@@ -720,10 +834,11 @@ BarWidget {
 
       Text {
         id: statLabel
+        textFormat: Text.PlainText
         text: statRow.label
-        color: root.dim
+        color: root.fg
         font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
+        font.pixelSize: Style.font.title
         font.bold: true
         wrapMode: Text.NoWrap
         elide: Text.ElideRight
@@ -735,10 +850,11 @@ BarWidget {
 
       Text {
         id: statValue
+        textFormat: Text.PlainText
         text: statRow.value
         color: root.fg
         font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
+        font.pixelSize: Style.font.title
         font.bold: true
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
@@ -755,6 +871,7 @@ BarWidget {
 
     Text {
       id: captionText
+      textFormat: Text.PlainText
       visible: statRow.caption !== ""
       y: headerRow.height + statRow.barBlock + statRow.gap
       width: parent.width
@@ -778,7 +895,7 @@ BarWidget {
 
   Timer {
     interval: 2000
-    running: true
+    running: root.popupOpen
     repeat: true
     triggeredOnStart: true
     onTriggered: if (!systemProc.running) systemProc.running = true
