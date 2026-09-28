@@ -365,8 +365,28 @@ BarWidget {
     if (root.bar) root.bar.run("omarchy-launch-or-focus-tui btop")
   }
 
+  // brittiaa.widgets calls owner.open() when it lifts this panel onto a
+  // wallpaper card. Without it, the host falls back to setting PopupCard.open
+  // directly, which never flips popupOpen — so the sample timer stays off and
+  // the card keeps the "--" placeholders forever.
+  function open() {
+    root.popupOpen = true
+  }
+
   function close() {
     root.popupOpen = false
+  }
+
+  // True once the wallpaper host has reparented the panel content out of the
+  // PopupCard. Sampling must keep running in that case even if focus-grab
+  // dismissal clears popupOpen afterwards.
+  readonly property bool desktopEmbedded: {
+    var p = panel.parent
+    while (p) {
+      if (p === popup) return false
+      p = p.parent
+    }
+    return panel.parent !== null
   }
 
   implicitWidth: button.implicitWidth
@@ -465,9 +485,14 @@ BarWidget {
   Connections {
     target: popup
     function onOpenChanged() {
-      if (popup.open) root.startRotation()
+      if (popup.open || root.desktopEmbedded) root.startRotation()
       else rotationStop.restart()
     }
+  }
+
+  onDesktopEmbeddedChanged: {
+    if (root.desktopEmbedded) root.startRotation()
+    else if (!popup.open) rotationStop.restart()
   }
 
   PopupCard {
@@ -895,7 +920,7 @@ BarWidget {
 
   Timer {
     interval: 2000
-    running: root.popupOpen
+    running: root.popupOpen || root.desktopEmbedded
     repeat: true
     triggeredOnStart: true
     onTriggered: if (!systemProc.running) systemProc.running = true
