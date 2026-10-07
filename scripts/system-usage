@@ -15,6 +15,7 @@
 #   gpu_temp <celsius> | n/a
 #   ram_temp <celsius> | n/a
 #   disk_temp <mount> <celsius>
+#   fan <hwmon-name>/fan<N> <rpm> [label...]  (HW_TOOLTIP_IGNORE_FANS hides matches)
 #   disk <mount> <used-gib> <total-gib> <percent> [model...]
 #
 # GPU source is the first tool that actually returns a sample:

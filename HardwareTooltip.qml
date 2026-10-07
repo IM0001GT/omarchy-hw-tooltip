@@ -20,6 +20,7 @@ BarWidget {
   property string cpuTempText: ""
   property string gpuTempText: ""
   property string ramTempText: ""
+  property var fans: []
   property var cores: []
   property string ramUsed: "--"
   property string ramTotal: "--"
@@ -34,6 +35,18 @@ BarWidget {
   property bool diskActive: false
   property var disks: []
   property bool popupOpen: false
+
+  // shell.json: { "id": "im0001gt.hw-tooltip", "ignoreFans": ["it8613/fan3"] }
+  // Array or space/comma separated string of <hwmon name>/fan<N> globs.
+  // shell.json arrays arrive as QVariantList, not JS arrays: check length, not Array.isArray.
+  readonly property string ignoreFans: {
+    var v = root.setting("ignoreFans", "")
+    if (typeof v === "string") return v
+    if (!v || typeof v.length !== "number") return ""
+    var out = []
+    for (var i = 0; i < v.length; i++) out.push(String(v[i]))
+    return out.join(" ")
+  }
 
   readonly property int cpuPct: parseInt(cpuText, 10) || 0
   readonly property int gpuPct: gpuText === "n/a" ? -1 : (parseInt(gpuText, 10) || 0)
@@ -208,7 +221,14 @@ BarWidget {
 
   function cpuIdentity() {
     var name = (root.cpuName && root.cpuName !== "CPU") ? root.cpuName : ""
-    return root.joinBits([name, root.cpuTempText])
+    return root.joinBits([name, root.cpuTempText, root.fanText()])
+  }
+
+  function fanText() {
+    if (root.fans.length === 1) return root.fans[0].rpm + " RPM"
+    return root.fans.map(function(fan) {
+      return (fan.label || fan.key.split("/").pop()) + " " + fan.rpm + " RPM"
+    }).join(" · ")
   }
 
   function ramStatus() {
@@ -244,6 +264,7 @@ BarWidget {
     var cpuTemp = ""
     var gpuTemp = ""
     var ramTemp = ""
+    var fans = []
     var ramUsed = "--"
     var ramTotal = "--"
     var ramPct = 0
@@ -299,6 +320,8 @@ BarWidget {
         cpuTemp = parts[1] === "n/a" ? "" : parts[1] + "°C"
       } else if (key === "gpu_temp" && parts.length > 1) {
         gpuTemp = parts[1] === "n/a" ? "" : parts[1] + "°C"
+      } else if (key === "fan" && parts.length > 2) {
+        fans.push({ key: parts[1], rpm: parseInt(parts[2], 10) || 0, label: parts.slice(3).join(" ") })
       } else if (key === "ram_temp" && parts.length > 1) {
         ramTemp = parts[1] === "n/a" ? "" : parts[1] + "°C"
       } else if (key === "disk_temp" && parts.length > 2) {
@@ -330,6 +353,7 @@ BarWidget {
     root.cpuTempText = cpuTemp
     root.gpuTempText = gpuTemp
     root.ramTempText = ramTemp
+    root.fans = fans
     root.cores = cores
     root.ramUsed = ramUsed
     root.ramTotal = ramTotal
@@ -887,6 +911,7 @@ BarWidget {
   Process {
     id: systemProc
     command: [root.systemScript]
+    environment: ({ "HW_TOOLTIP_IGNORE_FANS": root.ignoreFans })
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.parse(text)

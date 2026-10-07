@@ -70,6 +70,22 @@ The panel sizes itself to the hardware in the machine: more CPU threads add colu
 
 Move it with `omarchy bar move im0001gt.hw-tooltip`.
 
+## Settings
+
+Fan speeds come from every `fan*_input` under `/sys/class/hwmon`. To hide an
+input that is not wired (it always reads 0 RPM), add `ignoreFans` to the widget
+entry in `~/.config/omarchy/shell.json`:
+
+```json
+{ "id": "im0001gt.hw-tooltip", "ignoreFans": ["it8613/fan3"] }
+```
+
+Each rule is `<hwmon name>/fan<N>` and may use shell globs (`*/fan3`,
+`nct6798/fan[5-7]`). The hwmon name is the `name` file next to the input
+(`sensors` prints it as the chip prefix), so rules survive `hwmonN`
+renumbering between boots. Without `ignoreFans` every fan is shown, including
+one that has stopped.
+
 ## Update
 
 ```bash
