@@ -98,6 +98,12 @@ awk '
 gpu_from_nvidia() {
   [[ -r /proc/driver/nvidia/version ]] || return 1
   command -v nvidia-smi >/dev/null 2>&1 || return 1
+  # Hybrid laptops: nvidia-smi wakes a runtime-suspended dGPU, and polling it
+  # every second keeps it awake forever (~13 W idle). Only ask when one of our
+  # processes actually has the GPU open; otherwise fall through to the iGPU.
+  if command -v fuser >/dev/null 2>&1 && [[ -e /dev/nvidia0 ]]; then
+    fuser -s /dev/nvidia0 2>/dev/null || return 1
+  fi
   local vals max="" v cmd=(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits)
   if command -v timeout >/dev/null 2>&1; then
     cmd=(timeout 2 "${cmd[@]}")
