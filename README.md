@@ -103,7 +103,7 @@ Hybrid laptops and multi-GPU desktops list each card the same way storage lists 
 
 Each device in the panel shows one headline temperature when the kernel exposes it: CPU package / Tctl, GPU junction (AMD) or GPU die, a DIMM/SODIMM reading, and NVMe Composite (or the drive's primary sensor). Extra per-core, per-junction, and ambient/wifi/battery sensors stay out of the tooltip.
 
-`k10temp` and `coretemp` win when the kernel has bound them. On a CPU newer than that table, Tctl is simply missing. Ryzen AI 400 (Gorgon Point, PCI `1022:114b`) is one of those: `sensors` shows the GPU edge, the SSD, and the Dell controller, and no package sensor. The firmware still publishes the package as an `acpitz` zone whose critical trip sits on the CPU limit (105°C on the Ryzen AI 7 445). The tooltip uses that zone, and an embedded-controller sensor labeled CPU when the zone is absent. A chassis or skin zone, whose trip is much lower, stays out. btop will still print a number in the CPU box on these machines by picking whichever other sensor it finds first. That number is not Tctl.
+`k10temp` and `coretemp` win when the kernel has bound them. Newer AMD CPUs that the running kernel has not taught `k10temp` about leave Tctl missing, so the older package readouts never appear. Ryzen AI 400 (Gorgon Point, PCI `1022:114b`) is one of those. The firmware still publishes the package as an `acpitz` zone whose critical trip sits on the CPU limit (105°C on the Ryzen AI 7 445). The tooltip uses that zone, and an embedded-controller sensor labeled CPU when the zone is absent. A chassis or skin zone, whose trip is much lower, stays out.
 
 ## Layout
 
