@@ -219,9 +219,12 @@ BarWidget {
     return out.join(" · ")
   }
 
-  function cpuIdentity() {
-    var name = (root.cpuName && root.cpuName !== "CPU") ? root.cpuName : ""
-    return root.joinBits([name, root.cpuTempText, root.fanText()])
+  function cpuModel() {
+    return (root.cpuName && root.cpuName !== "CPU") ? root.cpuName : ""
+  }
+
+  function cpuReadings() {
+    return root.joinBits([root.cpuTempText, root.fanText()])
   }
 
   function fanText() {
@@ -237,23 +240,23 @@ BarWidget {
 
   function ramStatus() {
     var info = root.ramInfo !== "" ? root.ramInfo : ""
-    return root.joinBits([info, root.ramUsed + " / " + root.ramTotal + " GiB", root.ramTempText])
+    return root.joinBits([info, root.ramUsed + " / " + root.ramTotal + " GiB"])
   }
 
   function gpuStatus() {
     if (root.gpuText === "n/a" && root.gpuTempText === "")
       return root.gpuHint === "nvidia-utils" ? "Install nvidia-utils for GPU stats" : "GPU stats unavailable"
-    var name = (root.gpuName && root.gpuName !== "GPU") ? root.gpuName : ""
-    return root.joinBits([name, root.gpuTempText])
+    return (root.gpuName && root.gpuName !== "GPU") ? root.gpuName : ""
   }
 
-  function diskCaption(disk) {
+  function gpuReadings() {
+    if (root.gpuText === "n/a" && root.gpuTempText === "") return ""
+    return root.gpuTempText
+  }
+
+  function diskFacts(disk) {
     var mount = disk.name ? disk.mount : ""
-    return root.joinBits([mount, disk.used + " / " + disk.total + " GiB", disk.temp || ""])
-  }
-
-  function gpuCaption(card) {
-    return card.temp || ""
+    return root.joinBits([mount, disk.used + " / " + disk.total + " GiB"])
   }
 
   function parse(raw) {
@@ -542,7 +545,7 @@ BarWidget {
       Item {
         id: heroBlock
         width: parent.width
-        implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroPercent.implicitHeight)
+        implicitHeight: Math.max(heroIcon.implicitHeight, heroCol.implicitHeight)
 
         Text {
           id: heroIcon
@@ -555,30 +558,97 @@ BarWidget {
         }
 
         Column {
-          id: heroLabels
+          id: heroCol
           anchors.left: heroIcon.right
           anchors.leftMargin: Style.space(14)
-          anchors.right: heroPercent.left
-          anchors.rightMargin: Style.space(10)
+          anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
           spacing: Style.space(2)
 
-          Text {
-            textFormat: Text.PlainText
-            text: "CPU"
-            color: root.fg
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.title
-            font.bold: true
-            wrapMode: Text.NoWrap
-            elide: Text.ElideRight
+          Item {
+            id: heroTitleRow
             width: parent.width
+            implicitHeight: cpuTitleMetrics.height
+
+            TextMetrics {
+              id: cpuTitleMetrics
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              text: "CPU"
+            }
+
+            TextMetrics {
+              id: heroPercentMetrics
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              text: root.cpuText
+            }
+
+            TextMetrics {
+              id: heroReadingsMetrics
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              text: root.cpuReadings()
+            }
+
+            Text {
+              id: cpuTitle
+              textFormat: Text.PlainText
+              text: "CPU"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              wrapMode: Text.NoWrap
+              elide: Text.ElideRight
+              anchors.left: parent.left
+              anchors.right: heroReadings.visible ? heroReadings.left : heroPercent.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Text {
+              id: heroReadings
+              textFormat: Text.PlainText
+              visible: root.cpuReadings() !== ""
+              text: root.cpuReadings()
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              wrapMode: Text.NoWrap
+              elide: Text.ElideLeft
+              horizontalAlignment: Text.AlignRight
+              anchors.right: heroPercent.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              width: {
+                if (root.cpuReadings() === "") return 0
+                var room = Math.max(0, parent.width - cpuTitleMetrics.width - heroPercentMetrics.width - Style.space(20))
+                return Math.min(heroReadingsMetrics.width, room)
+              }
+            }
+
+            Text {
+              id: heroPercent
+              textFormat: Text.PlainText
+              text: root.cpuText
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+            }
           }
 
           Text {
             textFormat: Text.PlainText
-            visible: root.cpuIdentity() !== ""
-            text: root.cpuIdentity()
+            visible: root.cpuModel() !== ""
+            text: root.cpuModel()
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -600,18 +670,6 @@ BarWidget {
             elide: Text.ElideRight
             width: parent.width
           }
-        }
-
-        Text {
-          id: heroPercent
-          textFormat: Text.PlainText
-          text: root.cpuText
-          color: root.fg
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.title
-          font.bold: true
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
         }
       }
 
@@ -695,6 +753,7 @@ BarWidget {
           title: "Memory"
           value: root.ramPct + "%"
           status: root.ramStatus()
+          readings: root.ramTempText
           percent: root.ramPct
         }
 
@@ -707,6 +766,7 @@ BarWidget {
           title: "GPU"
           value: root.gpus.length <= 1 ? root.gpuText : ""
           status: root.gpus.length <= 1 ? root.gpuStatus() : ""
+          readings: root.gpus.length <= 1 ? root.gpuReadings() : ""
           percent: root.gpus.length <= 1 ? (root.gpuText === "n/a" ? -1 : root.gpuPct) : -1
         }
 
@@ -724,7 +784,7 @@ BarWidget {
               label: modelData.name ? modelData.name : "GPU"
               value: modelData.text
               percent: modelData.percent
-              caption: root.gpuCaption(modelData)
+              readings: modelData.temp || ""
             }
           }
         }
@@ -737,7 +797,8 @@ BarWidget {
           icon: "󰋊"
           title: "Storage"
           value: root.disks.length === 1 ? root.disks[0].percent + "%" : ""
-          status: root.disks.length === 1 ? root.diskCaption(root.disks[0]) : ""
+          status: root.disks.length === 1 ? root.diskFacts(root.disks[0]) : ""
+          readings: root.disks.length === 1 ? (root.disks[0].temp || "") : ""
           percent: root.disks.length === 1 ? root.disks[0].percent : -1
         }
 
@@ -755,7 +816,8 @@ BarWidget {
               label: modelData.name ? modelData.name : modelData.mount
               value: modelData.percent + "%"
               percent: modelData.percent
-              caption: root.diskCaption(modelData)
+              readings: modelData.temp || ""
+              caption: root.diskFacts(modelData)
             }
           }
         }
@@ -770,6 +832,7 @@ BarWidget {
     property string title: ""
     property string value: ""
     property string status: ""
+    property string readings: ""
     property int percent: -1
 
     width: parent.width
@@ -777,7 +840,31 @@ BarWidget {
 
     Item {
       width: parent.width
-      implicitHeight: Math.max(secIcon.implicitHeight, secTitle.implicitHeight, secValue.implicitHeight)
+      implicitHeight: secTitleMetrics.height
+
+      TextMetrics {
+        id: secTitleMetrics
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+        text: section.title
+      }
+
+      TextMetrics {
+        id: secValueMetrics
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+        text: section.value
+      }
+
+      TextMetrics {
+        id: secReadingsMetrics
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+        text: section.readings
+      }
 
       Text {
         id: secIcon
@@ -802,9 +889,33 @@ BarWidget {
         elide: Text.ElideRight
         anchors.left: secIcon.right
         anchors.leftMargin: Style.space(8)
-        anchors.right: secValue.visible ? secValue.left : parent.right
+        anchors.right: secReadings.visible ? secReadings.left : (secValue.visible ? secValue.left : parent.right)
         anchors.rightMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        id: secReadings
+        textFormat: Text.PlainText
+        visible: section.readings !== ""
+        text: section.readings
+        color: root.fg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+        wrapMode: Text.NoWrap
+        elide: Text.ElideLeft
+        horizontalAlignment: Text.AlignRight
+        anchors.right: secValue.visible ? secValue.left : parent.right
+        anchors.rightMargin: secValue.visible ? Style.space(10) : 0
+        anchors.verticalCenter: parent.verticalCenter
+        width: {
+          if (section.readings === "") return 0
+          var reserve = (secIcon.visible ? secIcon.implicitWidth + Style.space(8) : 0) + secTitleMetrics.width + Style.space(8)
+          if (secValue.visible) reserve += secValueMetrics.width + Style.space(10)
+          var room = Math.max(0, parent.width - reserve)
+          return Math.min(secReadingsMetrics.width, room)
+        }
       }
 
       Text {
@@ -868,11 +979,12 @@ BarWidget {
     required property string label
     required property string value
     required property int percent
+    property string readings: ""
     property string caption: ""
 
     width: parent.width
 
-    readonly property real headerHeight: Math.max(statLabel.implicitHeight, statValue.implicitHeight)
+    readonly property real headerHeight: headerRow.height
     readonly property real barHeight: Style.space(6)
     readonly property real gap: Style.space(6)
     readonly property real barBlock: percent >= 0 ? gap + barHeight : 0
@@ -884,7 +996,31 @@ BarWidget {
     Item {
       id: headerRow
       width: parent.width
-      height: statRow.headerHeight
+      height: statLabelMetrics.height
+
+      TextMetrics {
+        id: statLabelMetrics
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+        text: statRow.label
+      }
+
+      TextMetrics {
+        id: statValueMetrics
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+        text: statRow.value
+      }
+
+      TextMetrics {
+        id: statReadingsMetrics
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+        text: statRow.readings
+      }
 
       Text {
         id: statLabel
@@ -897,9 +1033,31 @@ BarWidget {
         wrapMode: Text.NoWrap
         elide: Text.ElideRight
         anchors.left: parent.left
-        anchors.right: statValue.left
+        anchors.right: statReadings.visible ? statReadings.left : statValue.left
         anchors.rightMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        id: statReadings
+        textFormat: Text.PlainText
+        visible: statRow.readings !== ""
+        text: statRow.readings
+        color: root.fg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.title
+        font.bold: true
+        wrapMode: Text.NoWrap
+        elide: Text.ElideLeft
+        horizontalAlignment: Text.AlignRight
+        anchors.right: statValue.left
+        anchors.rightMargin: Style.space(10)
+        anchors.verticalCenter: parent.verticalCenter
+        width: {
+          if (statRow.readings === "") return 0
+          var room = Math.max(0, parent.width - statValueMetrics.width - Style.space(10) - Style.space(48))
+          return Math.min(statReadingsMetrics.width, room)
+        }
       }
 
       Text {
@@ -917,7 +1075,7 @@ BarWidget {
 
     Meter {
       visible: statRow.percent >= 0
-      y: headerRow.height + statRow.gap
+      y: statRow.headerHeight + statRow.gap
       width: parent.width
       implicitHeight: statRow.barHeight
       percent: statRow.percent
@@ -927,7 +1085,7 @@ BarWidget {
       id: captionText
       textFormat: Text.PlainText
       visible: statRow.caption !== ""
-      y: headerRow.height + statRow.barBlock + statRow.gap
+      y: statRow.headerHeight + statRow.barBlock + statRow.gap
       width: parent.width
       text: statRow.caption
       color: root.dim

@@ -2,7 +2,7 @@
 
 An Omarchy bar widget that names the silicon in the machine, then stays out of the way.
 
-Click the chip for a Power-style panel: CPU model, temperature, and per-core bars, RAM type/speed and temp, GPU name, temperature, and load, disk model, fill, and temp. It follows the active Omarchy theme. Right-click opens `btop` if you want the full TUI.
+Click the chip for a Power-style panel: CPU model, temperature, fan speed, and per-core bars, RAM type/speed and temp, GPU name, temperature, and load, disk model, fill, and temp. It follows the active Omarchy theme. Right-click opens `btop` if you want the full TUI.
 
 <p align="center">
   <img src="preview.gif" alt="Left-click opens the Hardware Tooltip panel; click again to close" width="360">
@@ -15,7 +15,7 @@ Click the chip for a Power-style panel: CPU model, temperature, and per-core bar
 
 | Left click | Right click |
 | --- | --- |
-| CPU name/temp, per-core bars, RAM type/speed/temp, GPU name/temp, storage model, fill, and temp | Launch or focus `btop` |
+| CPU name, temp, fan speed, per-core bars, RAM type/speed/temp, GPU name/temp, storage model, fill, and temp | Launch or focus `btop` |
 
 Load-aware status lines rotate the same way the Power panel does — idle machines loaf, busy GPUs push pixels, a local model run starts chewing context.
 
@@ -44,7 +44,7 @@ This widget:
 - samples GPU load from `/proc/*/fdinfo` `drm-engine-*` time (Render/3D) instead of the broken busy node
 - labels memory as **GDDR6 14000 MT/s** from the published 14 Gbps-per-pin spec, not the command clock
 
-Ordinary Radeons still use `gpu_busy_percent`. Intel uses DRM fdinfo / RC6. NVIDIA uses `nvidia-smi` only when the driver is actually loaded.
+Ordinary Radeons still use `gpu_busy_percent`. Intel uses DRM fdinfo / RC6. NVIDIA uses `nvidia-smi` only while some process already has the device open, so an idle hybrid card can stay suspended.
 
 The 16 GB of unified memory is soldered GDDR6, not DIMMs, so `dmidecode` / `inxi` report `type: N/A` (the panel used to show a lone **N**) and a single `1750 MT/s` command clock. There is no SPD to read. On PCI `1002:13fe` / DMI `BC-250` the widget uses the published 14 Gbps-per-pin spec as **GDDR6 14000 MT/s**.
 
@@ -62,7 +62,7 @@ Intel and AMD need no extra packages. NVIDIA GPU load uses `nvidia-smi` from `nv
 
 ## Use
 
-- **Left click** the chip — panel with CPU, memory, GPU, and storage
+- **Left click** the chip — panel with CPU, fan speed, memory, GPU, and storage
 - **Right click** — launch or focus `btop`
 - Click the chip again, or anywhere outside, to close
 
@@ -72,13 +72,70 @@ Move it with `omarchy bar move im0001gt.hw-tooltip`.
 
 ## Settings
 
-Fan speeds come from every `fan*_input` under `/sys/class/hwmon`. To hide an input that is not wired (it always reads 0 RPM), add `ignoreFans` to the widget entry in `~/.config/omarchy/shell.json`:
+Fan speed sits on the CPU row, in the same type as the CPU heading, just left of the utilization percent. One fan shows its speed (`1400 RPM`). Several fans show a label with each speed (`CPU 1400 RPM · Case 900 RPM`).
+
+Every fan the kernel publishes is listed, including one sitting at 0 RPM. Hide a fan by adding its name to `ignoreFans`. Show it again by taking that name off the list.
+
+### See the fan names
+
+The panel shows speeds. The setting wants a name like `it8613/fan3`. Print every name on the machine:
+
+```bash
+for hw in /sys/class/hwmon/hwmon*; do
+  name=$(<"$hw/name") || continue
+  for input in "$hw"/fan*_input; do
+    [ -r "$input" ] || continue
+    n=${input##*/fan}
+    n=${n%_input}
+    rpm=$(<"$input")
+    label=""
+    [ -r "${input%_input}_label" ] && label=$(<"${input%_input}_label")
+    printf '%s/fan%s\t%s RPM\t%s\n' "$name" "$n" "$rpm" "$label"
+  done
+done
+```
+
+A line looks like `it8613/fan3    0 RPM`. The word before the slash is the chip name, the same prefix `sensors` prints. That name still matches after Linux renumbers `hwmon0` and `hwmon1` on the next boot.
+
+### Hide fans
+
+`ignoreFans` is the list of fans to leave out. Set the whole list:
+
+```bash
+omarchy bar set im0001gt.hw-tooltip ignoreFans '["it8613/fan3"]' --json
+```
+
+The widget entry in `~/.config/omarchy/shell.json` then reads:
 
 ```json
 { "id": "im0001gt.hw-tooltip", "ignoreFans": ["it8613/fan3"] }
 ```
 
-Each rule is `<hwmon name>/fan<N>` and may use shell globs (`*/fan3`, `nct6798/fan[5-7]`). The hwmon name is the `name` file next to the input (`sensors` prints it as the chip prefix), so rules survive `hwmonN` renumbering between boots. Without `ignoreFans` every fan is shown, including one that has stopped.
+To hide more than one, list every fan that should stay hidden. The command replaces the whole list:
+
+```bash
+omarchy bar set im0001gt.hw-tooltip ignoreFans '["it8613/fan3", "nct6798/fan5"]' --json
+```
+
+A name can be a shell glob. `*/fan3` hides fan3 on every chip. `nct6798/fan[5-7]` hides a range. Matching ignores case.
+
+See the saved list:
+
+```bash
+omarchy bar get im0001gt.hw-tooltip ignoreFans
+```
+
+The panel follows the file when `shell.json` is saved.
+
+### Show fans again
+
+Leave in the list only the fans that should stay hidden. To show every fan:
+
+```bash
+omarchy bar set im0001gt.hw-tooltip ignoreFans '[]' --json
+```
+
+A fan that has spun down to 0 RPM stays on the CPU row until its name is in `ignoreFans`.
 
 On a hybrid laptop, `nvidia-smi` is queried only while some process already has `/dev/nvidia0` open. An idle discrete NVIDIA card can stay in runtime suspend. The one-time name lookup still calls `nvidia-smi` when the hardware cache is first built.
 
@@ -106,7 +163,7 @@ omarchy plugin remove im0001gt.hw-tooltip
 | GPU | Extra package | How load is read |
 | --- | --- | --- |
 | Intel | none | DRM fdinfo engine busy (`drm-engine-*` on i915, `drm-cycles-*` on xe), then RC6 / GT idle residency. No `kernel.perf_event_paranoid` change |
-| NVIDIA | `nvidia-utils` | `nvidia-smi`, and only when the NVIDIA driver is loaded |
+| NVIDIA | `nvidia-utils` | `nvidia-smi`, and only while some process has the NVIDIA device open |
 | AMD | none | `gpu_busy_percent`. If that node is missing or `ENOTSUPP` (BC-250), DRM fdinfo engine time |
 
 Hybrid laptops and multi-GPU desktops list each card the same way storage lists each mount: name, load, and one headline temperature.
@@ -137,6 +194,9 @@ The repo root **is** the plugin. That is what `omarchy plugin add` and `omarchy 
 - [pisolutions-es](https://github.com/pisolutions-es) — Intel xe GPU load from fdinfo cycles and GT idle residency
 - [hlasensky](https://github.com/hlasensky) — CPU and GPU temperature display
 - [jotapesse](https://github.com/jotapesse) — memory and storage temperatures
+- [wszaq](https://github.com/wszaq) — live stats when the panel is embedded on the wallpaper
+- [ssamartzis](https://github.com/ssamartzis) — fan speeds and `ignoreFans`
+- [zednaked](https://github.com/zednaked) — leave a suspended NVIDIA card asleep
 
 ## License
 
