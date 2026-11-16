@@ -12,6 +12,8 @@
 #   gpu_kind render | infer
 #   gpu_hint nvidia-utils          (NVIDIA hardware, nvidia-smi missing)
 #   cpu_temp <celsius> | n/a
+#             k10temp/coretemp, else an EC sensor labeled CPU, else the
+#             ACPI package zone (acpitz with a 90-125C critical trip)
 #   gpu_temp <celsius> | n/a
 #   ram_temp <celsius> | n/a
 #   disk_temp <mount> <celsius>

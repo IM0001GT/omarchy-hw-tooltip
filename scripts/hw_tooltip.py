@@ -490,6 +490,71 @@ def pick_label(found, wanted):
     return None
 
 
+def _ignored_temp_hwmon(name):
+    low = (name or "").lower()
+    if skip_hwmon_name(low):
+        return True
+    if low in GPU_HWMON or low.startswith("i915") or low.startswith("xe"):
+        return True
+    if low == "nvme" or low.startswith("nvme"):
+        return True
+    if "wifi" in low or low.startswith("mt76") or low.startswith("mt79"):
+        return True
+    return False
+
+
+def _explicit_cpu_label(found):
+    """EC/WMI sensors that name the CPU, such as dell_ddv's 'CPU' label."""
+    for label, c in found:
+        low = (label or "").lower()
+        if any(bad in low for bad in (
+            "gpu", "wifi", "ambient", "nvme", "dimm", "sodimm",
+            "battery", "pch", "vrm", "edge",
+        )):
+            continue
+        if low in ("cpu", "tctl", "tdie", "package") or low.startswith("package id") or low.startswith("cpu "):
+            return c
+    return None
+
+
+def _trip_limit_c(zone):
+    best = None
+    for i in range(8):
+        kind = read(os.path.join(zone, "trip_point_%d_type" % i)).lower()
+        if not kind:
+            break
+        if kind not in ("critical", "hot"):
+            continue
+        c = milli_c(read(os.path.join(zone, "trip_point_%d_temp" % i)))
+        if c is None:
+            continue
+        best = c if best is None else max(best, c)
+    return best
+
+
+def acpi_package_temp_c(sysfs_root="/sys"):
+    """Package temperature from ACPI when k10temp or coretemp has not bound.
+
+    Ryzen AI 400 (Gorgon Point, family 1Ah model 68h, PCI 1022:114b) is
+    newer than this kernel's k10temp ID table, so Tctl never appears.
+    The firmware still publishes that reading as an acpitz zone whose
+    critical trip sits on the package limit. Skin and chassis zones trip
+    well below 90°C and stay out.
+    """
+    chosen = None
+    zones = glob.glob(os.path.join(sysfs_root, "class", "thermal", "thermal_zone*"))
+    for zone in sorted(zones):
+        if read(os.path.join(zone, "type")).lower() != "acpitz":
+            continue
+        temp = milli_c(read(os.path.join(zone, "temp")))
+        limit = _trip_limit_c(zone)
+        if temp is None or limit is None or limit < 90 or limit > 125:
+            continue
+        if chosen is None or limit > chosen[0]:
+            chosen = (limit, temp)
+    return None if chosen is None else chosen[1]
+
+
 def cpu_temp_c(sysfs_root="/sys"):
     for hw in hwmon_dirs(sysfs_root):
         name = read(os.path.join(hw, "name")).lower()
@@ -512,7 +577,14 @@ def cpu_temp_c(sysfs_root="/sys"):
             c = milli_c(read(os.path.join(zone, "temp")))
             if c is not None:
                 return c
-    return None
+    for hw in hwmon_dirs(sysfs_root):
+        name = read(os.path.join(hw, "name")).lower()
+        if name in CPU_HWMON or _ignored_temp_hwmon(name):
+            continue
+        c = _explicit_cpu_label(hwmon_temps(hw))
+        if c is not None:
+            return c
+    return acpi_package_temp_c(sysfs_root)
 
 
 def nvidia_smi_temp():

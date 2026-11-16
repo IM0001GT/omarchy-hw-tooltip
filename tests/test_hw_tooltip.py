@@ -240,6 +240,67 @@ class HeadlineTemps(unittest.TestCase):
         self.assertIsNone(self.hw.gpu_temp_c(self.root))
         self.assertIsNone(self.hw.ram_temp_c(self.root))
 
+    def test_gorgon_point_uses_acpi_package_not_gpu_edge(self):
+        # Ryzen AI 400: k10temp does not bind (PCI 1022:114b). Firmware
+        # reports the package as acpitz with a critical trip at Tjmax.
+        write_tree(self.root, {
+            "class/hwmon/hwmon4/name": "dell_smm\n",
+            "class/hwmon/hwmon4/temp1_input": "49000\n",
+            "class/hwmon/hwmon4/temp2_input": "31000\n",
+            "class/hwmon/hwmon6/name": "amdgpu\n",
+            "class/hwmon/hwmon6/temp1_label": "edge\n",
+            "class/hwmon/hwmon6/temp1_input": "51000\n",
+            "class/hwmon/hwmon8/name": "mt7925_phy0\n",
+            "class/hwmon/hwmon8/temp1_input": "52000\n",
+            "class/thermal/thermal_zone0/type": "acpitz\n",
+            "class/thermal/thermal_zone0/temp": "49000\n",
+            "class/thermal/thermal_zone0/trip_point_0_type": "critical\n",
+            "class/thermal/thermal_zone0/trip_point_0_temp": "105000\n",
+            "class/thermal/thermal_zone0/trip_point_1_type": "hot\n",
+            "class/thermal/thermal_zone0/trip_point_1_temp": "101000\n",
+            "class/thermal/thermal_zone1/type": "acpitz\n",
+            "class/thermal/thermal_zone1/temp": "34000\n",
+            "class/thermal/thermal_zone1/trip_point_0_type": "critical\n",
+            "class/thermal/thermal_zone1/trip_point_0_temp": "70000\n",
+        })
+        self.assertEqual(self.hw.cpu_temp_c(self.root), 49)
+        self.assertEqual(self.hw.gpu_temp_c(self.root), 51)
+
+    def test_acpi_zone_without_package_trip_is_not_cpu(self):
+        write_tree(self.root, {
+            "class/thermal/thermal_zone0/type": "acpitz\n",
+            "class/thermal/thermal_zone0/temp": "42000\n",
+        })
+        self.assertIsNone(self.hw.cpu_temp_c(self.root))
+
+    def test_k10temp_beats_acpi_package_and_ec_label(self):
+        write_tree(self.root, {
+            "class/hwmon/hwmon0/name": "k10temp\n",
+            "class/hwmon/hwmon0/temp1_label": "Tctl\n",
+            "class/hwmon/hwmon0/temp1_input": "47250\n",
+            "class/hwmon/hwmon4/name": "dell_ddv\n",
+            "class/hwmon/hwmon4/temp1_label": "CPU\n",
+            "class/hwmon/hwmon4/temp1_input": "80000\n",
+            "class/thermal/thermal_zone0/type": "acpitz\n",
+            "class/thermal/thermal_zone0/temp": "81000\n",
+            "class/thermal/thermal_zone0/trip_point_0_type": "critical\n",
+            "class/thermal/thermal_zone0/trip_point_0_temp": "105000\n",
+        })
+        self.assertEqual(self.hw.cpu_temp_c(self.root), 47)
+
+    def test_ec_cpu_label_when_package_driver_is_missing(self):
+        write_tree(self.root, {
+            "class/hwmon/hwmon4/name": "dell_ddv\n",
+            "class/hwmon/hwmon4/temp1_label": "CPU\n",
+            "class/hwmon/hwmon4/temp1_input": "57000\n",
+            "class/hwmon/hwmon4/temp2_label": "SODIMM\n",
+            "class/hwmon/hwmon4/temp2_input": "45000\n",
+            "class/hwmon/hwmon4/temp3_label": "Ambient\n",
+            "class/hwmon/hwmon4/temp3_input": "35000\n",
+        })
+        self.assertEqual(self.hw.cpu_temp_c(self.root), 57)
+        self.assertEqual(self.hw.ram_temp_c(self.root), 45)
+
 
 class MultipleGpus(unittest.TestCase):
     def setUp(self):
