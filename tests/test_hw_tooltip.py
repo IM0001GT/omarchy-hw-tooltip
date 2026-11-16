@@ -302,6 +302,92 @@ class HeadlineTemps(unittest.TestCase):
         self.assertEqual(self.hw.ram_temp_c(self.root), 45)
 
 
+class FanInputs(unittest.TestCase):
+    def setUp(self):
+        self.hw = load_mod()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        # IT8613E: fan2 wired, fan3 unwired.
+        write_tree(self.root, {
+            "class/hwmon/hwmon1/name": "it8613\n",
+            "class/hwmon/hwmon1/fan2_input": "2860\n",
+            "class/hwmon/hwmon1/fan3_input": "0\n",
+            "class/hwmon/hwmon2/name": "coretemp\n",
+            "class/hwmon/hwmon2/temp1_input": "55000\n",
+        })
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_lists_every_fan_by_default(self):
+        self.assertEqual(self.hw.fan_rpms(self.root), [
+            ("it8613/fan2", 2860, ""),
+            ("it8613/fan3", 0, ""),
+        ])
+
+    def test_ignore_exact_key(self):
+        rows = self.hw.fan_rpms(self.root, self.hw.fan_ignore_patterns("it8613/fan3"))
+        self.assertEqual(rows, [("it8613/fan2", 2860, "")])
+
+    def test_ignore_is_case_insensitive_and_globbed(self):
+        for raw in ("IT8613/FAN3", "*/fan3", "it86*/fan[3-5]"):
+            rows = self.hw.fan_rpms(self.root, self.hw.fan_ignore_patterns(raw))
+            self.assertEqual([r[0] for r in rows], ["it8613/fan2"], raw)
+
+    def test_zero_rpm_is_not_hidden_without_a_rule(self):
+        # A stopped real fan must stay visible; only explicit rules hide inputs.
+        keys = [r[0] for r in self.hw.fan_rpms(self.root, ())]
+        self.assertIn("it8613/fan3", keys)
+
+    def test_patterns_split_on_spaces_and_commas(self):
+        self.assertEqual(self.hw.fan_ignore_patterns(" a/fan1, b/fan2  c/* "),
+                         ["a/fan1", "b/fan2", "c/*"])
+        self.assertEqual(self.hw.fan_ignore_patterns(""), [])
+
+    def test_label_and_numeric_order(self):
+        write_tree(self.root, {
+            "class/hwmon/hwmon3/name": "nct6798\n",
+            "class/hwmon/hwmon3/fan10_input": "900\n",
+            "class/hwmon/hwmon3/fan2_input": "1200\n",
+            "class/hwmon/hwmon3/fan2_label": "CPU  Fan\n",
+            "class/hwmon/hwmon3/fan4_input": "garbage\n",
+        })
+        rows = [r for r in self.hw.fan_rpms(self.root) if r[0].startswith("nct")]
+        self.assertEqual(rows, [("nct6798/fan2", 1200, "CPU Fan"), ("nct6798/fan10", 900, "")])
+
+    def test_env_var_drives_emit(self):
+        import contextlib
+        import io
+        os.environ[self.hw.FAN_IGNORE_ENV] = "it8613/fan3"
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.hw.emit_fans(self.root)
+        finally:
+            del os.environ[self.hw.FAN_IGNORE_ENV]
+        self.assertEqual(buf.getvalue(), "fan it8613/fan2 2860\n")
+
+
+class NvidiaSuspendGate(unittest.TestCase):
+    def setUp(self):
+        self.hw = load_mod()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_missing_device_keeps_the_query(self):
+        missing = os.path.join(self.root, "no-such-nvidia")
+        self.assertTrue(self.hw.nvidia_query_allowed(missing))
+
+    def test_closed_device_node_skips_the_query(self):
+        path = os.path.join(self.root, "nvidia0")
+        with open(path, "w", encoding="utf-8"):
+            pass
+        self.assertFalse(self.hw.nvidia_query_allowed(path))
+
+
 class MultipleGpus(unittest.TestCase):
     def setUp(self):
         self.hw = load_mod()

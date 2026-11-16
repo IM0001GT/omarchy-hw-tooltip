@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """GPU load (i915 + xe) and one headline temperature per device."""
 
+import fnmatch
 import glob
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -15,6 +17,9 @@ CPU_HWMON = {"k10temp", "zenpower", "coretemp", "cpu_thermal", "cpuinfo"}
 GPU_HWMON = {"amdgpu", "i915", "xe", "nvidia", "nouveau"}
 RAM_HWMON = {"spd5118", "jc42", "ee1004"}
 SKIP_HWMON = {"bat0", "ac", "iwlwifi", "ucsi_source"}
+# Space/comma separated <hwmon name>/fan<N> globs, e.g. "it8613/fan3".
+# Set from the widget's ignoreFans setting in shell.json.
+FAN_IGNORE_ENV = "HW_TOOLTIP_IGNORE_FANS"
 
 
 def _nofollow_flag():
@@ -587,7 +592,34 @@ def cpu_temp_c(sysfs_root="/sys"):
     return acpi_package_temp_c(sysfs_root)
 
 
+def nvidia_query_allowed(dev="/dev/nvidia0"):
+    """Skip nvidia-smi while a hybrid dGPU is runtime-suspended.
+
+    nvidia-smi wakes the card, and polling it every sample keeps an idle
+    dGPU out of D3. Query only when some process already has the device
+    open. No device node, or no fuser, keeps the previous always-query
+    behavior.
+    """
+    if not os.path.exists(dev):
+        return True
+    fuser = shutil.which("fuser")
+    if not fuser:
+        return True
+    try:
+        proc = subprocess.run(
+            [fuser, "-s", dev],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return proc.returncode == 0
+
+
 def nvidia_smi_temp():
+    if not nvidia_query_allowed():
+        return None
     if not os.path.exists("/proc/driver/nvidia/version"):
         return None
     try:
@@ -676,6 +708,8 @@ def parse_nvidia_smi_gpus(text):
 
 
 def nvidia_smi_gpus():
+    if not nvidia_query_allowed():
+        return []
     if not os.path.exists("/proc/driver/nvidia/version"):
         return []
     try:
@@ -930,6 +964,44 @@ def collect_gpu_cards(sysfs_root="/sys"):
     return cards
 
 
+def fan_ignore_patterns(raw=None):
+    if raw is None:
+        raw = os.environ.get(FAN_IGNORE_ENV, "")
+    return [p.lower() for p in re.split(r"[\s,]+", raw) if p]
+
+
+def fan_rpms(sysfs_root="/sys", ignore=()):
+    """(key, rpm, label) for every readable fan*_input, key = <hwmon name>/fan<N>.
+
+    Matching on the hwmon name keeps rules stable; hwmonN numbers move between boots.
+    """
+    rows = []
+    for hw in hwmon_dirs(sysfs_root):
+        name = read(os.path.join(hw, "name")).lower()
+        if not name or skip_hwmon_name(name):
+            continue
+        inputs = []
+        for path in glob.glob(os.path.join(hw, "fan*_input")):
+            m = re.search(r"fan(\d+)_input$", path)
+            if m:
+                inputs.append((int(m.group(1)), path))
+        for n, path in sorted(inputs):
+            key = "%s/fan%d" % (name, n)
+            if any(fnmatch.fnmatchcase(key, pat) for pat in ignore):
+                continue
+            raw = read(path)
+            if not raw.isdigit():
+                continue
+            label = " ".join(read(path.replace("_input", "_label")).split())
+            rows.append((key, int(raw), label))
+    return rows
+
+
+def emit_fans(sysfs_root="/sys"):
+    for key, rpm, label in fan_rpms(sysfs_root, fan_ignore_patterns()):
+        print(("fan %s %d %s" % (key, rpm, label)).rstrip())
+
+
 def emit_gpus(sysfs_root="/sys"):
     cards = collect_gpu_cards(sysfs_root)
     if not cards:
@@ -960,6 +1032,7 @@ def emit_temps(sysfs_root="/sys"):
         return str(v) if v is not None else "n/a"
     print("cpu_temp %s" % tok(cpu_temp_c(sysfs_root)))
     print("ram_temp %s" % tok(ram_temp_c(sysfs_root)))
+    emit_fans(sysfs_root)
     if os.path.realpath(sysfs_root) != os.path.realpath("/sys"):
         return
     seen = {}
