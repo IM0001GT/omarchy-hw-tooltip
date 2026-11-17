@@ -36,17 +36,20 @@ BarWidget {
   property var disks: []
   property bool popupOpen: false
 
-  // shell.json: { "id": "im0001gt.hw-tooltip", "ignoreFans": ["it8613/fan3"] }
-  // Array or space/comma separated string of <hwmon name>/fan<N> globs.
-  // shell.json arrays arrive as QVariantList, not JS arrays: check length, not Array.isArray.
-  readonly property string ignoreFans: {
-    var v = root.setting("ignoreFans", "")
-    if (typeof v === "string") return v
-    if (!v || typeof v.length !== "number") return ""
-    var out = []
-    for (var i = 0; i < v.length; i++) out.push(String(v[i]))
-    return out.join(" ")
-  }
+  // shell.json: {
+  //   "id": "im0001gt.hw-tooltip",
+  //   "ignoreFans": ["it8613/fan3"],
+  //   "fanNames": { "it8613/fan2": "CPU" }
+  // }
+  // ignoreFans: array or space/comma separated <hwmon name>/fan<N> globs.
+  // fanNames: map of those keys to a label. shell.json arrays/maps arrive as
+  // QVariantList / QVariantMap: check length/keys, not Array.isArray.
+  readonly property var ignoreFanList: root.stringListSetting("ignoreFans")
+  readonly property var fanNameMap: root.stringMapSetting("fanNames")
+
+  property bool fanPickerOpen: false
+  property string editingFanKey: ""
+  property bool fanRenameCancel: false
 
   readonly property int cpuPct: parseInt(cpuText, 10) || 0
   readonly property int gpuPct: gpuText === "n/a" ? -1 : (parseInt(gpuText, 10) || 0)
@@ -224,18 +227,172 @@ BarWidget {
   }
 
   function cpuReadings() {
-    return root.joinBits([root.cpuTempText, root.fanText()])
+    return root.cpuTempText
   }
 
-  function fanText() {
-    if (root.fans.length === 1) return root.fans[0].rpm + " RPM"
-    var bits = []
-    for (var i = 0; i < root.fans.length; i++) {
-      var fan = root.fans[i]
-      var label = fan.label || String(fan.key || "").split("/").pop()
-      bits.push(label + " " + fan.rpm + " RPM")
+  function stringListSetting(name) {
+    var v = root.setting(name, [])
+    var out = []
+    if (typeof v === "string") {
+      var parts = v.split(/[\s,]+/)
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i]) out.push(parts[i])
+      }
+      return out
     }
-    return bits.join(" · ")
+    if (!v || typeof v.length !== "number") return out
+    for (var j = 0; j < v.length; j++) out.push(String(v[j]))
+    return out
+  }
+
+  function stringMapSetting(name) {
+    var v = root.setting(name, {})
+    var out = {}
+    if (!v || typeof v !== "object" || typeof v.length === "number") return out
+    for (var k in v) {
+      if (!k || k === "id") continue
+      out[String(k)] = String(v[k])
+    }
+    return out
+  }
+
+  function globMatch(text, pattern) {
+    var t = String(text || "").toLowerCase()
+    var p = String(pattern || "").toLowerCase()
+    var re = "^"
+    for (var i = 0; i < p.length; i++) {
+      var c = p.charAt(i)
+      if (c === "*") {
+        re += ".*"
+      } else if (c === "?") {
+        re += "."
+      } else if (c === "[") {
+        var j = p.indexOf("]", i + 1)
+        if (j < 0) {
+          re += "\\["
+        } else {
+          re += p.slice(i, j + 1)
+          i = j
+        }
+      } else if ("\\.^$+(){}|".indexOf(c) >= 0) {
+        re += "\\" + c
+      } else {
+        re += c
+      }
+    }
+    re += "$"
+    try {
+      return new RegExp(re).test(t)
+    } catch (e) {
+      return t === p
+    }
+  }
+
+  function fanIgnored(key) {
+    var k = String(key || "").toLowerCase()
+    var list = root.ignoreFanList
+    for (var i = 0; i < list.length; i++) {
+      if (root.globMatch(k, list[i])) return true
+    }
+    return false
+  }
+
+  function sanitizeFanName(name) {
+    var s = String(name || "").replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim()
+    if (s.length > 32) s = s.slice(0, 32).trim()
+    return s
+  }
+
+  function fanDisplayName(fan) {
+    if (!fan) return "Fan"
+    var custom = root.fanNameMap[fan.key]
+    if (custom) return custom
+    if (fan.label) return fan.label
+    var key = String(fan.key || "")
+    var parts = key.split("/")
+    return parts.length ? parts[parts.length - 1] : "Fan"
+  }
+
+  readonly property var visibleFans: {
+    var ignored = root.ignoreFanList
+    var out = []
+    for (var i = 0; i < root.fans.length; i++) {
+      if (!root.fanIgnored(root.fans[i].key)) out.push(root.fans[i])
+    }
+    return out
+  }
+
+  readonly property int fanColumns: {
+    if (root.fanPickerOpen) return 1
+    var n = root.visibleFans.length
+    if (n <= 5) return 1
+    return 2
+  }
+
+  function persistSettings(values) {
+    var id = root.moduleName || "im0001gt.hw-tooltip"
+    var entry = { id: id }
+    var src = root.settings || {}
+    for (var existing in src) {
+      if (existing !== "id") entry[existing] = src[existing]
+    }
+    for (var key in values) entry[key] = values[key]
+    root.settings = entry
+    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
+      root.bar.shell.updateEntryInline(id, entry)
+  }
+
+  function toggleFanHidden(key) {
+    var k = String(key || "").toLowerCase()
+    if (!k) return
+    var next = []
+    if (root.fanIgnored(k)) {
+      var list = root.ignoreFanList
+      for (var i = 0; i < list.length; i++) {
+        if (!root.globMatch(k, list[i])) next.push(list[i])
+      }
+    } else {
+      next = root.ignoreFanList.slice()
+      var found = false
+      for (var j = 0; j < next.length; j++) {
+        if (String(next[j]).toLowerCase() === k) found = true
+      }
+      if (!found) next.push(k)
+    }
+    root.persistSettings({ ignoreFans: next })
+  }
+
+  function setFanName(key, name) {
+    var k = String(key || "")
+    if (!k) return
+    var names = {}
+    var src = root.fanNameMap
+    var clean = root.sanitizeFanName(name)
+    for (var existing in src) {
+      if (clean === "" && existing === k) continue
+      names[existing] = src[existing]
+    }
+    if (clean !== "") names[k] = clean
+    root.persistSettings({ fanNames: names })
+  }
+
+  function beginFanRename(key) {
+    root.fanRenameCancel = false
+    root.editingFanKey = String(key || "")
+  }
+
+  function cancelFanRename() {
+    root.fanRenameCancel = true
+    root.editingFanKey = ""
+  }
+
+  function commitFanRename(key, name) {
+    if (root.fanRenameCancel) {
+      root.fanRenameCancel = false
+      return
+    }
+    if (root.editingFanKey === key) root.editingFanKey = ""
+    root.setFanName(key, name)
   }
 
   function ramStatus() {
@@ -406,6 +563,8 @@ BarWidget {
 
   function close() {
     root.popupOpen = false
+    root.fanPickerOpen = false
+    root.editingFanKey = ""
   }
 
   // True once the wallpaper host has reparented the panel content out of the
@@ -419,6 +578,26 @@ BarWidget {
       p = p.parent
     }
     return panel.parent !== null
+  }
+
+  onPopupOpenChanged: {
+    if (!root.popupOpen) {
+      root.fanPickerOpen = false
+      root.editingFanKey = ""
+    }
+  }
+
+  ShellIpc {
+    target: "im0001gt.hw-tooltip"
+
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function toggle(): void { root.popupOpen = !root.popupOpen }
+    function toggleFans(): void {
+      root.editingFanKey = ""
+      root.fanPickerOpen = !root.fanPickerOpen
+      if (!root.popupOpen) root.popupOpen = true
+    }
   }
 
   implicitWidth: button.implicitWidth
@@ -745,6 +924,132 @@ BarWidget {
         spacing: Style.space(14)
 
         PanelSeparator {
+          foreground: root.fg
+        }
+
+        Column {
+          id: fansBlock
+          visible: root.fans.length > 0
+          width: parent.width
+          spacing: Style.space(6)
+
+          Item {
+            width: parent.width
+            implicitHeight: fansTitleMetrics.height
+
+            TextMetrics {
+              id: fansTitleMetrics
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              text: "Fans"
+            }
+
+            Item {
+              id: fansIconHit
+              width: Math.max(fansIcon.implicitWidth, Style.space(28))
+              height: Math.max(fansIcon.implicitHeight, Style.space(28))
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+
+              Text {
+                id: fansIcon
+                text: "󰈐"
+                color: root.fanPickerOpen ? Color.accent : root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.title
+                anchors.centerIn: parent
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                hoverEnabled: true
+                onClicked: {
+                  root.editingFanKey = ""
+                  root.fanPickerOpen = !root.fanPickerOpen
+                }
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              text: "Fans"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              wrapMode: Text.NoWrap
+              elide: Text.ElideRight
+              anchors.left: fansIconHit.right
+              anchors.leftMargin: Style.space(8)
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: root.fanPickerOpen
+            width: parent.width
+            text: "Toggle a fan to show or hide it on the panel."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: !root.fanPickerOpen && root.visibleFans.length === 0
+            width: parent.width
+            text: "All hidden — click the fan icon to show them"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.Wrap
+          }
+
+          Column {
+            visible: root.fanPickerOpen
+            width: parent.width
+            spacing: Style.space(8)
+
+            Repeater {
+              model: root.fanPickerOpen ? root.fans : []
+
+              FanToggleRow {
+                required property var modelData
+                fan: modelData
+              }
+            }
+          }
+
+          Grid {
+            id: fansGrid
+            visible: !root.fanPickerOpen && root.visibleFans.length > 0
+            width: parent.width
+            columns: root.fanColumns
+            columnSpacing: Style.spacing.md
+            rowSpacing: Style.spacing.sm
+
+            Repeater {
+              model: fansGrid.visible ? root.visibleFans : []
+
+              FanRow {
+                required property var modelData
+                fan: modelData
+                width: {
+                  var cols = Math.max(1, fansGrid.columns)
+                  return (fansGrid.width - fansGrid.columnSpacing * (cols - 1)) / cols
+                }
+              }
+            }
+          }
+        }
+
+        PanelSeparator {
+          visible: fansBlock.visible
           foreground: root.fg
         }
 
@@ -1096,10 +1401,167 @@ BarWidget {
     }
   }
 
+  component FanRow: Item {
+    id: fanRow
+
+    property var fan: null
+
+    readonly property bool editing: fan && root.editingFanKey === fan.key
+    readonly property string rpmText: fan ? (fan.rpm + " RPM") : ""
+
+    implicitHeight: Math.max(
+      fanNameMetrics.height,
+      fanRpmMetrics.height,
+      fanEdit.visible ? fanEdit.implicitHeight : 0
+    )
+
+    TextMetrics {
+      id: fanNameMetrics
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      font.bold: true
+      text: (root.fanNameMap && fanRow.fan) ? root.fanDisplayName(fanRow.fan) : ""
+    }
+
+    TextMetrics {
+      id: fanRpmMetrics
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      text: fanRow.rpmText
+    }
+
+    Text {
+      id: fanName
+      textFormat: Text.PlainText
+      visible: !fanRow.editing
+      text: (root.fanNameMap && fanRow.fan) ? root.fanDisplayName(fanRow.fan) : ""
+      color: root.fg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      font.bold: true
+      wrapMode: Text.NoWrap
+      elide: Text.ElideRight
+      anchors.left: parent.left
+      anchors.right: fanRpm.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+
+      MouseArea {
+        id: fanNameHover
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: if (fanRow.fan) root.beginFanRename(fanRow.fan.key)
+      }
+    }
+
+    TextField {
+      id: fanEdit
+      visible: fanRow.editing
+      anchors.left: parent.left
+      anchors.right: fanRpm.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      foreground: root.fg
+      accent: Color.accent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      verticalPadding: Style.space(2)
+      maximumLength: 32
+      placeholderText: "Name"
+      onVisibleChanged: {
+        if (visible && fanRow.fan) {
+          text = root.fanDisplayName(fanRow.fan)
+          selectAll()
+          forceActiveFocus()
+        }
+      }
+      onAccepted: if (fanRow.fan) root.commitFanRename(fanRow.fan.key, text)
+      onEditingFinished: if (fanRow.fan) root.commitFanRename(fanRow.fan.key, text)
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Escape) {
+          root.cancelFanRename()
+          event.accepted = true
+        }
+      }
+    }
+
+    Text {
+      id: fanRpm
+      textFormat: Text.PlainText
+      text: fanRow.rpmText
+      color: root.fg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      width: Math.max(fanRpmMetrics.width, Style.space(70))
+      horizontalAlignment: Text.AlignRight
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+    }
+  }
+
+  component FanToggleRow: Item {
+    id: fanToggle
+
+    property var fan: null
+
+    width: parent.width
+    implicitHeight: Math.max(fanToggleText.implicitHeight, fanSwitch.implicitHeight)
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: if (fanToggle.fan) root.toggleFanHidden(fanToggle.fan.key)
+    }
+
+    Column {
+      id: fanToggleText
+      anchors.left: parent.left
+      anchors.right: fanSwitch.left
+      anchors.rightMargin: Style.space(10)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(1)
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width
+        text: (root.fanNameMap && fanToggle.fan) ? root.fanDisplayName(fanToggle.fan) : ""
+        color: root.fg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+        wrapMode: Text.NoWrap
+        elide: Text.ElideRight
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width
+        text: fanToggle.fan ? (fanToggle.fan.key + " · " + fanToggle.fan.rpm + " RPM") : ""
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.NoWrap
+        elide: Text.ElideRight
+      }
+    }
+
+    ToggleSwitch {
+      id: fanSwitch
+      interactive: false
+      checked: !!(fanToggle.fan && !root.fanIgnored(fanToggle.fan.key))
+      foreground: root.fg
+      accent: Color.accent
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+    }
+  }
+
   Process {
     id: systemProc
     command: [root.systemScript]
-    environment: ({ "HW_TOOLTIP_IGNORE_FANS": root.ignoreFans })
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.parse(text)

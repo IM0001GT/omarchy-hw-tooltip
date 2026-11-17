@@ -998,7 +998,8 @@ def fan_rpms(sysfs_root="/sys", ignore=()):
 
 
 def emit_fans(sysfs_root="/sys"):
-    for key, rpm, label in fan_rpms(sysfs_root, fan_ignore_patterns()):
+    # Every readable fan*_input. The widget hides names listed in ignoreFans.
+    for key, rpm, label in fan_rpms(sysfs_root):
         print(("fan %s %d %s" % (key, rpm, label)).rstrip())
 
 

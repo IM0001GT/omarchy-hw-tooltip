@@ -2,7 +2,7 @@
 
 An Omarchy bar widget that names the silicon in the machine, then stays out of the way.
 
-Click the chip for a Power-style panel: CPU model, temperature, fan speed, and per-core bars, RAM type/speed and temp, GPU name, temperature, and load, disk model, fill, and temp. It follows the active Omarchy theme. Right-click opens `btop` if you want the full TUI.
+Click the chip for a Power-style panel: CPU model, temperature, and per-core bars, a Fans block with each tachometer on its own row, RAM type/speed and temp, GPU name, temperature, and load, disk model, fill, and temp. It follows the active Omarchy theme. Right-click opens `btop` if you want the full TUI.
 
 <p align="center">
   <img src="preview.gif" alt="Left-click opens the Hardware Tooltip panel; click again to close" width="360">
@@ -15,7 +15,7 @@ Click the chip for a Power-style panel: CPU model, temperature, fan speed, and p
 
 | Left click | Right click |
 | --- | --- |
-| CPU name, temp, fan speed, per-core bars, RAM type/speed/temp, GPU name/temp, storage model, fill, and temp | Launch or focus `btop` |
+| CPU name, temp, per-core bars, fans, RAM type/speed/temp, GPU name/temp, storage model, fill, and temp | Launch or focus `btop` |
 
 Load-aware status lines rotate the same way the Power panel does — idle machines loaf, busy GPUs push pixels, a local model run starts chewing context.
 
@@ -62,7 +62,7 @@ Intel and AMD need no extra packages. NVIDIA GPU load uses `nvidia-smi` from `nv
 
 ## Use
 
-- **Left click** the chip — panel with CPU, fan speed, memory, GPU, and storage
+- **Left click** the chip — panel with CPU, fans, memory, GPU, and storage
 - **Right click** — launch or focus `btop`
 - Click the chip again, or anywhere outside, to close
 
@@ -72,9 +72,12 @@ Move it with `omarchy bar move im0001gt.hw-tooltip`.
 
 ## Settings
 
-Fan speed sits on the CPU row, in the same type as the CPU heading, just left of the utilization percent. One fan shows its speed (`1400 RPM`). Several fans show a label with each speed (`CPU 1400 RPM · Case 900 RPM`).
+Fans are their own block, under the CPU cores, in the same style as Memory, GPU, and Storage. Each tachometer is a compact row: a name on the left, RPM on the right. Several fans share the block and, from six up, sit in two columns so the card stays the same width.
 
-Every fan the kernel publishes is listed, including one sitting at 0 RPM. Hide a fan by adding its name to `ignoreFans`. Show it again by taking that name off the list.
+Every fan the kernel publishes is listed, including one sitting at 0 RPM.
+
+- **Rename** — click the name on a fan row. Enter keeps the new label, Escape leaves it. An empty name restores the kernel label (`CPU Fan`, `fan2`, …). Names are stored in `fanNames`.
+- **Show / hide** — click the fan icon on the Fans heading. Each discovered input gets a toggle. Off writes that fan into `ignoreFans`; on takes it out. The CLI still works if you would rather edit the list by hand.
 
 ### See the fan names
 
@@ -99,7 +102,7 @@ A line looks like `it8613/fan3    0 RPM`. The word before the slash is the chip 
 
 ### Hide fans
 
-`ignoreFans` is the list of fans to leave out. Set the whole list:
+Click the fan icon on the Fans heading and flip the toggle off. `ignoreFans` is the list of fans to leave out. You can also set the whole list:
 
 ```bash
 omarchy bar set im0001gt.hw-tooltip ignoreFans '["it8613/fan3"]' --json
@@ -129,13 +132,27 @@ The panel follows the file when `shell.json` is saved.
 
 ### Show fans again
 
-Leave in the list only the fans that should stay hidden. To show every fan:
+Click the fan icon and flip the toggle on, or leave in the list only the fans that should stay hidden. To show every fan:
 
 ```bash
 omarchy bar set im0001gt.hw-tooltip ignoreFans '[]' --json
 ```
 
-A fan that has spun down to 0 RPM stays on the CPU row until its name is in `ignoreFans`.
+A fan that has spun down to 0 RPM stays in the Fans block until its name is in `ignoreFans`.
+
+### Rename fans
+
+Click the name on a row, type, and press Enter. Clear the field and press Enter to restore the kernel label. The widget entry then includes a map:
+
+```json
+{ "id": "im0001gt.hw-tooltip", "fanNames": { "dell_ddv/fan1": "CPU", "dell_ddv/fan2": "GPU" } }
+```
+
+Same from the CLI:
+
+```bash
+omarchy bar set im0001gt.hw-tooltip fanNames '{"dell_ddv/fan1":"CPU","dell_ddv/fan2":"GPU"}' --json
+```
 
 On a hybrid laptop, `nvidia-smi` is queried only while some process already has `/dev/nvidia0` open. An idle discrete NVIDIA card can stay in runtime suspend. The one-time name lookup still calls `nvidia-smi` when the hardware cache is first built.
 

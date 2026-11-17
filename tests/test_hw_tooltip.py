@@ -355,7 +355,7 @@ class FanInputs(unittest.TestCase):
         rows = [r for r in self.hw.fan_rpms(self.root) if r[0].startswith("nct")]
         self.assertEqual(rows, [("nct6798/fan2", 1200, "CPU Fan"), ("nct6798/fan10", 900, "")])
 
-    def test_env_var_drives_emit(self):
+    def test_emit_lists_every_fan(self):
         import contextlib
         import io
         os.environ[self.hw.FAN_IGNORE_ENV] = "it8613/fan3"
@@ -365,7 +365,8 @@ class FanInputs(unittest.TestCase):
                 self.hw.emit_fans(self.root)
         finally:
             del os.environ[self.hw.FAN_IGNORE_ENV]
-        self.assertEqual(buf.getvalue(), "fan it8613/fan2 2860\n")
+        # The widget feed lists every input; QML applies ignoreFans.
+        self.assertEqual(buf.getvalue(), "fan it8613/fan2 2860\nfan it8613/fan3 0\n")
 
 
 class NvidiaSuspendGate(unittest.TestCase):
