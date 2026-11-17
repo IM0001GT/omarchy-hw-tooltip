@@ -328,6 +328,7 @@ BarWidget {
     if (n <= 5) return 1
     return 2
   }
+  readonly property int sectionIconWidth: Style.font.title
 
   function persistSettings(values) {
     var id = root.moduleName || "im0001gt.hw-tooltip"
@@ -945,24 +946,21 @@ BarWidget {
               text: "Fans"
             }
 
-            Item {
-              id: fansIconHit
-              width: Math.max(fansIcon.implicitWidth, Style.space(28))
-              height: Math.max(fansIcon.implicitHeight, Style.space(28))
+            OpticalGlyph {
+              id: fansIcon
+              text: "󰈐"
+              color: root.fanPickerOpen ? Color.accent : root.fg
+              fontFamily: root.fontFamily
+              fontSize: Style.font.title
+              paintedSize: Style.font.title
+              width: root.sectionIconWidth
+              height: root.sectionIconWidth
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
 
-              Text {
-                id: fansIcon
-                text: "󰈐"
-                color: root.fanPickerOpen ? Color.accent : root.fg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.title
-                anchors.centerIn: parent
-              }
-
               MouseArea {
                 anchors.fill: parent
+                anchors.margins: -4
                 cursorShape: Qt.PointingHandCursor
                 hoverEnabled: true
                 onClicked: {
@@ -981,7 +979,7 @@ BarWidget {
               font.bold: true
               wrapMode: Text.NoWrap
               elide: Text.ElideRight
-              anchors.left: fansIconHit.right
+              anchors.left: fansIcon.right
               anchors.leftMargin: Style.space(8)
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
@@ -1171,13 +1169,16 @@ BarWidget {
         text: section.readings
       }
 
-      Text {
+      OpticalGlyph {
         id: secIcon
         visible: section.icon !== ""
         text: section.icon
         color: root.fg
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.title
+        fontFamily: root.fontFamily
+        fontSize: Style.font.title
+        paintedSize: Style.font.title
+        width: root.sectionIconWidth
+        height: root.sectionIconWidth
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
       }
