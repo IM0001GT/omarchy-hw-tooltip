@@ -76,8 +76,8 @@ Fans are their own block, under the CPU cores, in the same style as Memory, GPU,
 
 Every fan the kernel publishes is listed, including one sitting at 0 RPM.
 
-- **Rename** — click the name on a fan row. Enter keeps the new label, Escape leaves it. An empty name restores the kernel label (`CPU Fan`, `fan2`, …). Names are stored in `fanNames`.
-- **Show / hide** — click the fan icon on the Fans heading. Each discovered input gets a toggle. Off writes that fan into `ignoreFans`; on takes it out. The CLI still works if you would rather edit the list by hand.
+- **Rename** — click the name on a fan row, or on a name in the picker. Enter keeps the new label, Escape leaves it. An empty name restores the kernel label (`CPU Fan`, `fan2`, …). Names are stored in `fanNames`.
+- **Show / hide** — click the fan icon on the Fans heading. Each discovered input gets a toggle. Off writes that fan into `ignoreFans`; on takes it out. Click a name in that list to rename it. The CLI still works if you would rather edit the list by hand.
 
 ### See the fan names
 
@@ -142,7 +142,7 @@ A fan that has spun down to 0 RPM stays in the Fans block until its name is in `
 
 ### Rename fans
 
-Click the name on a row, type, and press Enter. Clear the field and press Enter to restore the kernel label. The widget entry then includes a map:
+Click the name on a row, or on a name in the picker, type, and press Enter. Clear the field and press Enter to restore the kernel label. The widget entry then includes a map:
 
 ```json
 { "id": "im0001gt.hw-tooltip", "fanNames": { "dell_ddv/fan1": "CPU", "dell_ddv/fan2": "GPU" } }

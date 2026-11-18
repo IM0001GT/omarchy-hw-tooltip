@@ -990,7 +990,7 @@ BarWidget {
             textFormat: Text.PlainText
             visible: root.fanPickerOpen
             width: parent.width
-            text: "Toggle a fan to show or hide it on the panel."
+            text: "Click a name to rename. Toggle to show or hide."
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -1508,14 +1508,10 @@ BarWidget {
 
     property var fan: null
 
+    readonly property bool editing: fan && root.editingFanKey === fan.key
+
     width: parent.width
     implicitHeight: Math.max(fanToggleText.implicitHeight, fanSwitch.implicitHeight)
-
-    MouseArea {
-      anchors.fill: parent
-      cursorShape: Qt.PointingHandCursor
-      onClicked: if (fanToggle.fan) root.toggleFanHidden(fanToggle.fan.key)
-    }
 
     Column {
       id: fanToggleText
@@ -1527,6 +1523,7 @@ BarWidget {
 
       Text {
         textFormat: Text.PlainText
+        visible: !fanToggle.editing
         width: parent.width
         text: (root.fanNameMap && fanToggle.fan) ? root.fanDisplayName(fanToggle.fan) : ""
         color: root.fg
@@ -1535,6 +1532,39 @@ BarWidget {
         font.bold: true
         wrapMode: Text.NoWrap
         elide: Text.ElideRight
+
+        MouseArea {
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          onClicked: if (fanToggle.fan) root.beginFanRename(fanToggle.fan.key)
+        }
+      }
+
+      TextField {
+        visible: fanToggle.editing
+        width: parent.width
+        foreground: root.fg
+        accent: Color.accent
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        verticalPadding: Style.space(2)
+        maximumLength: 32
+        placeholderText: "Name"
+        onVisibleChanged: {
+          if (visible && fanToggle.fan) {
+            text = root.fanDisplayName(fanToggle.fan)
+            selectAll()
+            forceActiveFocus()
+          }
+        }
+        onAccepted: if (fanToggle.fan) root.commitFanRename(fanToggle.fan.key, text)
+        onEditingFinished: if (fanToggle.fan) root.commitFanRename(fanToggle.fan.key, text)
+        Keys.onPressed: function(event) {
+          if (event.key === Qt.Key_Escape) {
+            root.cancelFanRename()
+            event.accepted = true
+          }
+        }
       }
 
       Text {
@@ -1551,12 +1581,12 @@ BarWidget {
 
     ToggleSwitch {
       id: fanSwitch
-      interactive: false
       checked: !!(fanToggle.fan && !root.fanIgnored(fanToggle.fan.key))
       foreground: root.fg
       accent: Color.accent
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
+      onToggled: if (fanToggle.fan) root.toggleFanHidden(fanToggle.fan.key)
     }
   }
 
