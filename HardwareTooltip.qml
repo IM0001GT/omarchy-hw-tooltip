@@ -49,6 +49,7 @@ BarWidget {
 
   property bool fanPickerOpen: false
   property string editingFanKey: ""
+  property string editingFanDraft: ""
   property bool fanRenameCancel: false
 
   readonly property int cpuPct: parseInt(cpuText, 10) || 0
@@ -377,14 +378,38 @@ BarWidget {
     root.persistSettings({ fanNames: names })
   }
 
+  function fanByKey(key) {
+    var k = String(key || "")
+    for (var i = 0; i < root.fans.length; i++) {
+      if (root.fans[i].key === k) return root.fans[i]
+    }
+    return null
+  }
+
   function beginFanRename(key) {
+    var k = String(key || "")
+    if (!k) return
     root.fanRenameCancel = false
-    root.editingFanKey = String(key || "")
+    var fan = root.fanByKey(k)
+    root.editingFanDraft = fan ? root.fanDisplayName(fan) : ""
+    root.editingFanKey = k
+  }
+
+  function armFanEditor(field) {
+    if (!field) return
+    field.text = root.editingFanDraft
+    Qt.callLater(function() {
+      if (!field.visible || root.editingFanKey === "") return
+      field.selectAll()
+      field.forceActiveFocus()
+    })
   }
 
   function cancelFanRename() {
     root.fanRenameCancel = true
     root.editingFanKey = ""
+    root.editingFanDraft = ""
+    if (keyCatcher) keyCatcher.forceActiveFocus()
   }
 
   function commitFanRename(key, name) {
@@ -392,8 +417,10 @@ BarWidget {
       root.fanRenameCancel = false
       return
     }
-    if (root.editingFanKey === key) root.editingFanKey = ""
-    root.setFanName(key, name)
+    var k = key || root.editingFanKey
+    if (!k) return
+    if (root.editingFanKey === k) root.editingFanKey = ""
+    root.setFanName(k, name !== undefined ? name : root.editingFanDraft)
   }
 
   function ramStatus() {
@@ -518,7 +545,10 @@ BarWidget {
     root.cpuTempText = cpuTemp
     root.gpuTempText = gpuTemp
     root.ramTempText = ramTemp
-    root.fans = fans
+    // Replacing the array rebuilds every FanRow/FanToggleRow. That destroys
+    // the rename field mid-keystroke, so leave the list alone while editing.
+    if (root.editingFanKey === "")
+      root.fans = fans
     root.cores = cores
     root.ramUsed = ramUsed
     root.ramTotal = ramTotal
@@ -555,7 +585,7 @@ BarWidget {
   }
 
   // brittiaa.widgets calls owner.open() when it lifts this panel onto a
-  // wallpaper card. Without it, the host falls back to setting PopupCard.open
+  // wallpaper card. Without it, the host falls back to setting popup.open
   // directly, which never flips popupOpen — so the sample timer stays off and
   // the card keeps the "--" placeholders forever.
   function open() {
@@ -569,7 +599,7 @@ BarWidget {
   }
 
   // True once the wallpaper host has reparented the panel content out of the
-  // PopupCard. Sampling must keep running in that case even if focus-grab
+  // KeyboardPanel. Sampling must keep running in that case even if outside-click
   // dismissal clears popupOpen afterwards.
   readonly property bool desktopEmbedded: {
     if (!panel || !popup) return false
@@ -707,15 +737,23 @@ BarWidget {
     else if (!popup.open) rotationStop.restart()
   }
 
-  PopupCard {
+  // PopupCard is an xdg-popup and does not receive keys. KeyboardPanel primes
+  // layer-shell focus so the rename field can actually type and delete.
+  KeyboardPanel {
     id: popup
     anchorItem: button
     bar: root.bar
     owner: root
-    triggerMode: "click"
     open: root.popupOpen
+    focusTarget: keyCatcher
     contentWidth: popup.fittedContentWidth(root.panelWidth)
     contentHeight: popup.fittedContentHeight(panel.implicitHeight)
+
+    PanelKeyCatcher {
+      id: keyCatcher
+      anchors.fill: parent
+      blocked: root.editingFanKey !== ""
+      onCloseRequested: root.close()
 
     Column {
       id: panel
@@ -1126,6 +1164,7 @@ BarWidget {
         }
       }
     }
+    }
   }
 
   component SectionBlock: Column {
@@ -1471,20 +1510,13 @@ BarWidget {
       verticalPadding: Style.space(2)
       maximumLength: 32
       placeholderText: "Name"
-      onVisibleChanged: {
-        if (visible && fanRow.fan) {
-          text = root.fanDisplayName(fanRow.fan)
-          selectAll()
-          forceActiveFocus()
-        }
-      }
+      onVisibleChanged: if (visible) root.armFanEditor(fanEdit)
+      onTextChanged: if (fanRow.editing) root.editingFanDraft = text
       onAccepted: if (fanRow.fan) root.commitFanRename(fanRow.fan.key, text)
       onEditingFinished: if (fanRow.fan) root.commitFanRename(fanRow.fan.key, text)
-      Keys.onPressed: function(event) {
-        if (event.key === Qt.Key_Escape) {
-          root.cancelFanRename()
-          event.accepted = true
-        }
+      Keys.onEscapePressed: {
+        root.cancelFanRename()
+        event.accepted = true
       }
     }
 
@@ -1541,6 +1573,7 @@ BarWidget {
       }
 
       TextField {
+        id: fanToggleEdit
         visible: fanToggle.editing
         width: parent.width
         foreground: root.fg
@@ -1550,20 +1583,13 @@ BarWidget {
         verticalPadding: Style.space(2)
         maximumLength: 32
         placeholderText: "Name"
-        onVisibleChanged: {
-          if (visible && fanToggle.fan) {
-            text = root.fanDisplayName(fanToggle.fan)
-            selectAll()
-            forceActiveFocus()
-          }
-        }
+        onVisibleChanged: if (visible) root.armFanEditor(fanToggleEdit)
+        onTextChanged: if (fanToggle.editing) root.editingFanDraft = text
         onAccepted: if (fanToggle.fan) root.commitFanRename(fanToggle.fan.key, text)
         onEditingFinished: if (fanToggle.fan) root.commitFanRename(fanToggle.fan.key, text)
-        Keys.onPressed: function(event) {
-          if (event.key === Qt.Key_Escape) {
-            root.cancelFanRename()
-            event.accepted = true
-          }
+        Keys.onEscapePressed: {
+          root.cancelFanRename()
+          event.accepted = true
         }
       }
 
