@@ -68,18 +68,23 @@ def open_owned_dirfd(path):
         st = os.fstat(fd)
         if st.st_uid != os.getuid() or not stat.S_ISDIR(st.st_mode):
             raise OSError("untrusted root directory")
+        # Never chmod an existing ancestor. Tightening ~/.cache to 0700
+        # when XDG_RUNTIME_DIR is absent locked other accounts out of a
+        # shared cache. New directories are created 0700; existing ones
+        # keep the mode they already had.
         if rel == ".":
-            os.fchmod(fd, 0o700)
             out, fd = fd, None
             return out
         for part in rel.split(os.sep):
             if part in ("", ".", ".."):
                 raise OSError("invalid path component")
+            created = False
             try:
                 nxt = os.open(part, _dir_flags(), dir_fd=fd)
             except FileNotFoundError:
                 try:
                     os.mkdir(part, 0o700, dir_fd=fd)
+                    created = True
                 except FileExistsError:
                     pass
                 nxt = os.open(part, _dir_flags(), dir_fd=fd)
@@ -88,7 +93,8 @@ def open_owned_dirfd(path):
             st = os.fstat(fd)
             if st.st_uid != os.getuid() or not stat.S_ISDIR(st.st_mode):
                 raise OSError("untrusted ancestor %s" % part)
-            os.fchmod(fd, 0o700)
+            if created:
+                os.fchmod(fd, 0o700)
         out, fd = fd, None
         return out
     finally:
@@ -905,26 +911,114 @@ def disk_temp_c(dev, sysfs_root="/sys"):
     return found[0][1] if found else None
 
 
-def mounted_disks():
-    mounts = []
-    try:
-        out = subprocess.run(
-            ["df", "-P", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs", "-x", "overlay", "-x", "iso9660"],
-            capture_output=True, text=True, timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return mounts
-    seen = set()
-    for line in (out.stdout or "").splitlines()[1:]:
+# Virtual and remote filesystems. Reading /proc/self/mounts is non-blocking;
+# calling df/statvfs on a stalled NFS/CIFS/FUSE mount is not.
+SKIP_FS = frozenset({
+    "tmpfs", "devtmpfs", "squashfs", "overlay", "iso9660",
+    "nfs", "nfs4", "cifs", "smb", "smb3", "fuse", "9p", "afs",
+    "autofs", "ceph", "glusterfs", "lustre", "rpc_pipefs",
+    "proc", "sysfs", "cgroup", "cgroup2", "securityfs", "debugfs",
+    "pstore", "bpf", "tracefs", "mqueue", "hugetlbfs", "ramfs",
+    "efivarfs", "binfmt_misc", "configfs", "fusectl", "nsfs", "devpts",
+})
+REMOTE_FS_PREFIXES = ("nfs", "cifs", "smb", "fuse.", "ceph", "gluster", "lustre")
+
+
+def unescape_mount(value):
+    return (
+        (value or "")
+        .replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+    )
+
+
+def skip_fstype(fstype):
+    t = (fstype or "").lower()
+    if t in SKIP_FS:
+        return True
+    return any(t.startswith(p) for p in REMOTE_FS_PREFIXES)
+
+
+def parse_proc_mounts(text):
+    rows = []
+    for line in (text or "").splitlines():
         parts = line.split()
-        if len(parts) < 6:
+        if len(parts) < 3:
             continue
-        src, mnt = parts[0], parts[5]
-        if not src.startswith("/dev/") or src in seen:
+        src, mnt, fstype = unescape_mount(parts[0]), unescape_mount(parts[1]), parts[2]
+        rows.append((src, mnt, fstype))
+    return rows
+
+
+def local_block_mounts(mounts_text=None):
+    """Local /dev/ block mounts from /proc/self/mounts. Never calls df."""
+    if mounts_text is None:
+        try:
+            with open("/proc/self/mounts", encoding="utf-8", errors="replace") as fh:
+                mounts_text = fh.read()
+        except OSError:
+            return []
+    out = []
+    seen = set()
+    for src, mnt, fstype in parse_proc_mounts(mounts_text):
+        if skip_fstype(fstype):
+            continue
+        if not src.startswith("/dev/") or src == "/dev/fuse" or src in seen:
             continue
         seen.add(src)
-        mounts.append((mnt, src))
-    return mounts
+        out.append((mnt, src))
+    return out
+
+
+def mounted_disks(mounts_text=None):
+    return local_block_mounts(mounts_text)
+
+
+def disk_usage(mnt):
+    try:
+        st = os.statvfs(mnt)
+    except OSError:
+        return None
+    fr = st.f_frsize or st.f_bsize or 0
+    total = fr * st.f_blocks
+    used = total - fr * st.f_bfree
+    if total <= 0:
+        return None
+    used_g = "%.1f" % (used / 1073741824.0)
+    total_g = "%.1f" % (total / 1073741824.0)
+    pct = "%d" % int(round(100.0 * used / total))
+    return used_g, total_g, pct
+
+
+def disk_model(dev):
+    try:
+        out = subprocess.run(
+            ["lsblk", "-nso", "MODEL", dev],
+            capture_output=True, text=True, timeout=1,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    model = ""
+    for line in (out.stdout or "").splitlines():
+        line = line.strip()
+        if line:
+            model = line
+    return model
+
+
+def emit_disks(mounts_text=None):
+    for mnt, src in local_block_mounts(mounts_text):
+        usage = disk_usage(mnt)
+        if not usage:
+            continue
+        used_g, total_g, pct = usage
+        model = disk_model(src)
+        if model:
+            print("disk %s %s %s %s %s" % (mnt, used_g, total_g, pct, model))
+        else:
+            print("disk %s %s %s %s" % (mnt, used_g, total_g, pct))
 
 
 def collect_gpu_cards(sysfs_root="/sys"):
@@ -1056,6 +1150,9 @@ def main(argv):
         return 0
     if cmd == "temps":
         emit_temps()
+        return 0
+    if cmd == "disks":
+        emit_disks()
         return 0
     if cmd == "tick":
         ok = emit_gpus()

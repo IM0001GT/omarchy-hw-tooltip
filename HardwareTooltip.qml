@@ -1623,6 +1623,20 @@ BarWidget {
       waitForEnd: true
       onStreamFinished: root.parse(text)
     }
+    onRunningChanged: {
+      if (running) sampleDeadline.restart()
+      else sampleDeadline.stop()
+    }
+  }
+
+  // waitForEnd holds every metric until the child exits. A hung df used
+  // to pin running=true forever, so the 2s timer never started another
+  // sample. Kill the child if it overruns; the next tick starts clean.
+  Timer {
+    id: sampleDeadline
+    interval: 4000
+    repeat: false
+    onTriggered: if (systemProc.running) systemProc.running = false
   }
 
   Timer {

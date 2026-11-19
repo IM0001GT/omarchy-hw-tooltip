@@ -559,23 +559,9 @@ PY
 fi
 
 # ---- Storage ---------------------------------------------------------
+# Local /dev/ mounts from /proc/self/mounts + statvfs. Never call df: a
+# stalled NFS/CIFS/FUSE share blocks df before the local-device filter.
 
-disk_model() {
-  local dev=$1 model
-  model=$(lsblk -nso MODEL "$dev" 2>/dev/null | awk 'NF { m=$0 } END { gsub(/^[ \t]+|[ \t]+$/, "", m); print m }')
-  printf '%s' "$model"
-}
-
-df -P -x tmpfs -x devtmpfs -x squashfs -x overlay -x iso9660 2>/dev/null |
-  awk 'NR > 1 && $1 ~ /^\/dev\// && !seen[$1]++ { print $1, $2, $3, $6 }' |
-  while read -r src blocks used mnt; do
-    used_g=$(awk -v n="$used" 'BEGIN { printf "%.1f", n / 1048576 }')
-    total_g=$(awk -v n="$blocks" 'BEGIN { printf "%.1f", n / 1048576 }')
-    pct=$(awk -v u="$used" -v t="$blocks" 'BEGIN { printf "%.0f", (t > 0) ? u / t * 100 : 0 }')
-    model=$(disk_model "$src")
-    if [[ -n $model ]]; then
-      printf 'disk %s %s %s %s %s\n' "$mnt" "$used_g" "$total_g" "$pct" "$model"
-    else
-      printf 'disk %s %s %s %s\n' "$mnt" "$used_g" "$total_g" "$pct"
-    fi
-  done
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$HERE/hw_tooltip.py" disks 2>/dev/null || true
+fi

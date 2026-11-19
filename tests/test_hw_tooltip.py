@@ -513,6 +513,70 @@ class PrivateWrites(unittest.TestCase):
         os.symlink(target, dest)
         self.assertIsNone(self.hw.read_private_file(dest))
 
+    def test_existing_cache_parent_keeps_its_mode(self):
+        cache = os.path.join(self.root, ".cache")
+        os.mkdir(cache, 0o755)
+        os.chmod(cache, 0o755)
+        self.hw.open_owned_dirfd(os.path.join(cache, "hw-tooltip"))
+        self.assertEqual(stat.S_IMODE(os.stat(cache).st_mode), 0o755)
+        leaf = os.path.join(cache, "hw-tooltip")
+        self.assertTrue(os.path.isdir(leaf))
+        self.assertEqual(stat.S_IMODE(os.stat(leaf).st_mode), 0o700)
+
+    def test_runtime_file_without_xdg_runtime_does_not_tighten_cache(self):
+        cache = os.path.join(self.root, ".cache")
+        os.mkdir(cache, 0o755)
+        os.chmod(cache, 0o755)
+        old_home = os.environ.get("HOME")
+        old_runtime = os.environ.pop("XDG_RUNTIME_DIR", None)
+        os.environ["HOME"] = self.root
+        try:
+            path = self.hw.runtime_file("activity")
+            self.assertEqual(path, os.path.join(cache, "hw-tooltip", "activity"))
+            self.assertEqual(stat.S_IMODE(os.stat(cache).st_mode), 0o755)
+        finally:
+            if old_home is not None:
+                os.environ["HOME"] = old_home
+            else:
+                del os.environ["HOME"]
+            if old_runtime is not None:
+                os.environ["XDG_RUNTIME_DIR"] = old_runtime
+
+
+class LocalMounts(unittest.TestCase):
+    def setUp(self):
+        self.hw = load_mod()
+
+    def test_skips_remote_and_virtual_keeps_local_block(self):
+        text = "\n".join([
+            "/dev/nvme0n1p2 / ext4 rw,relatime 0 0",
+            "server:/export /mnt/nas nfs4 rw,relatime 0 0",
+            "//server/share /mnt/smb cifs rw 0 0",
+            "/dev/fuse /mnt/ssh fuse.sshfs rw 0 0",
+            "tmpfs /tmp tmpfs rw 0 0",
+            "overlay / overlay rw 0 0",
+            "/dev/sdb1 /data xfs rw 0 0",
+            "/dev/nvme0n1p2 /bind ext4 rw 0 0",
+            "/dev/sde1 /media/ntfs fuseblk rw 0 0",
+        ]) + "\n"
+        mounts = self.hw.local_block_mounts(text)
+        self.assertEqual(mounts, [
+            ("/", "/dev/nvme0n1p2"),
+            ("/data", "/dev/sdb1"),
+            ("/media/ntfs", "/dev/sde1"),
+        ])
+
+    def test_unescapes_spaces_in_mount_paths(self):
+        text = "/dev/sda1 /run/media/user/My\\040Disk ext4 rw 0 0\n"
+        self.assertEqual(
+            self.hw.local_block_mounts(text),
+            [("/run/media/user/My Disk", "/dev/sda1")],
+        )
+
+    def test_mounted_disks_uses_proc_not_df(self):
+        text = "/dev/sda1 / ext4 rw 0 0\nnfs.example:/share /mnt nfs4 rw 0 0\n"
+        self.assertEqual(self.hw.mounted_disks(text), [("/", "/dev/sda1")])
+
 
 if __name__ == "__main__":
     unittest.main()
